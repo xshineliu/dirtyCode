@@ -1,0 +1,165 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include <unistd.h>
+#include <sys/mman.h>
+#include <stdint.h>
+#include <unistd.h>
+
+#define DEF_HUGE_PAGE_SIZE (0x200000)
+#define ALLIGN_MASK (0x3FULL)
+#define ELEM_LEN (sizeof(unsigned long long))
+
+unsigned long long **data = NULL;
+int num_partition = 202;
+int num_elem = 4000;
+
+
+static inline unsigned long long time_ns(struct timespec* const ts) {
+        if (clock_gettime(CLOCK_REALTIME, ts)) {
+                exit(1);
+        }
+        return ((unsigned long long) ts->tv_sec) * 1000000000LLU
+                        + (unsigned long long) ts->tv_nsec;
+}
+
+int thread_worker(void* args) {
+    int i = 0, ret, thread_idx;
+	thread_idx = (int)(long)(uintptr_t)args;
+
+    data[thread_idx] = malloc(num_elem * ELEM_LEN);
+    //checking TODO
+    memset(data[thread_idx], 0, num_elem * ELEM_LEN);
+    printf("%03d: %016X\n", thread_idx, data[thread_idx]);
+}
+
+
+int allocMem_PerThread() {
+    int i;
+    char tname[16];
+    for (i = 0; i < num_partition; i++) {
+        pthread_t tid;
+        if (pthread_create(&tid, NULL, thread_worker, (void *)(long)(i)) != 0) {
+            fprintf(stderr, "pthread_create ThreadHandle failed at %d.\n", i);
+            exit(1);
+        }
+        snprintf(tname, 16, "worker_%03d", i);
+        pthread_setname_np(tid, (const char *)tname);
+    }
+}
+
+int allocMem1() {
+    int i = 0, ret;
+
+    for(i = 0; i < num_partition; i++) {
+    	data[i] = malloc(num_elem * ELEM_LEN);
+        memset(data[i], 0, num_elem * ELEM_LEN);
+    	//checking TODO
+        printf("%03d: %016X\n", i, data[i]);
+    }
+}
+
+int allocMem2() {
+    void *ptr = NULL;
+    int i = 0, ret;
+    unsigned long long slide_len_bytes = (num_elem * ELEM_LEN + ALLIGN_MASK) & (~ALLIGN_MASK);
+    unsigned long long n_bytes = num_partition * slide_len_bytes;
+
+    printf("%llX, %llX\n", slide_len_bytes, n_bytes);
+
+    ret = posix_memalign((void **)&ptr, sysconf(_SC_PAGESIZE), n_bytes);
+    if (ret) {
+        fprintf(stderr,"None zero ret code %d\n", ret);
+        exit(EXIT_FAILURE);
+    } else {
+    	printf("Memory allocated at pointer %p\n", ptr);
+    }
+
+    memset(ptr, 0, n_bytes);
+
+    for(i = 0; i < num_partition; i++) {
+    	data[i] = ptr + slide_len_bytes * i;
+        printf("%03d: %016llX\n", i, data[i]);
+    }
+}
+
+
+int allocMem3() {
+    void *ptr = NULL;
+    int i = 0;
+
+    unsigned long long slide_len_bytes = (num_elem * ELEM_LEN + ALLIGN_MASK) & (~ALLIGN_MASK);
+    unsigned long long n_bytes = num_partition * slide_len_bytes;
+
+    printf("%llX, %llX\n", slide_len_bytes, n_bytes);
+
+    ptr = mmap(NULL, ((n_bytes < DEF_HUGE_PAGE_SIZE) ? DEF_HUGE_PAGE_SIZE : n_bytes),
+                     PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0) ;
+    if(ptr != MAP_FAILED) {
+    	printf("HugePage allocated at pointer %p\n", ptr);
+    } else {
+        printf("HugePage allocated Failed: %d\n", ptr);
+        return 1;
+    }
+
+    memset(ptr, 0, n_bytes);
+
+    for(i = 0; i < num_partition; i++) {
+    	data[i] = ptr + slide_len_bytes * i;
+        printf("%03d: %016llX\n", i, data[i]);
+    }
+}
+
+int doStatistic() {
+    int i, j;
+    unsigned long long all = 0;
+    for(i = 0; i < num_elem; i++) {
+    	/* 1st table calculate the current summary */
+    	data[num_partition - 2][i] = 0;
+        for(j = 0; j < num_partition - 2; j++) {
+        	data[num_partition - 2][i] += data[j][i];
+        }
+        /* second table now to hold the delta, assume before now, hold the last summary */
+        data[num_partition - 1][i] = data[num_partition - 2][i] - data[num_partition - 1][i];
+        all += data[num_partition - 2][i];
+    }
+    return 0;
+}
+
+int main(int argc, char *const* argv) {
+
+    unsigned long long *pos = NULL;
+    unsigned long long start_ns, delta;
+    struct timespec ts;
+    int opt, i, j;
+
+    while ((opt = getopt(argc, argv, "n:")) != -1) {
+            switch (opt) {
+            case 'n':
+                    num_partition = strtoul(optarg, NULL, 0);
+                    break;
+            case 'l':
+                    num_elem = strtoul(optarg, NULL, 0);
+                    break;
+            default:
+                    printf("Invalid Commands.\n");
+                    exit(EXIT_FAILURE);
+            }
+    }
+
+    data = malloc(num_elem * sizeof(void *));
+
+    //allocMem1();
+    allocMem2();
+    //allocMem3();
+
+    //allocMem_PerThread();
+
+    start_ns = time_ns(&ts);
+    doStatistic();
+    delta = time_ns(&ts) - start_ns;
+    printf("%.06f ms\n", (double)delta / 1000000.0f);
+
+
+}

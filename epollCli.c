@@ -195,10 +195,19 @@ int processClient(void *d) {
 				nevt_receive++;
 				printf(" + ===> TID %04lu receive data is: %d %d (x %ld)\n",
 						idx, strlen(recvbuf), count, nevt_receive);
-				// add revelant socket write event
+
+
+				ev.data.fd = events[i].data.fd;
+				/* wait for server to close, ACK with FIN */
+				ev.events = EPOLLIN | EPOLLET;
+				epoll_ctl(epollFd, EPOLL_CTL_MOD, events[i].data.fd, &ev);
+
+				/* if wait for server to read data, eg: only ACK
 				ev.data.fd = events[i].data.fd;
 				ev.events = EPOLLOUT;
 				epoll_ctl(epollFd, EPOLL_CTL_MOD, events[i].data.fd, &ev);
+				*/
+
 			} else {
 				printf(" ? ===> TID %04d event %d not handled\n", idx, events[i].events);
 			}

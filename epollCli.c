@@ -26,12 +26,19 @@ static int processClient();
 int main(int argc, char *argv[]) {
 	int i = 0;
 	pthread_t tid[THREAD_NUM];
-	for (i; i < THREAD_NUM; ++i)
+	for (i = 0; i < THREAD_NUM; ++i) {
 		pthread_create(&tid[i], NULL, (void*) &processClient, (void *)&i);
-
-	while (1) {
-		sleep(1000000);
 	}
+
+
+	//sleep(10);
+
+	for (i = 0; i < THREAD_NUM; ++i) {
+		pthread_join(tid[i], NULL);
+		printf("%s thread %d joined\n", argv[0], i);
+	}
+
+	printf("%s exit\n", argv[0]);
 	return 0;
 }
 
@@ -59,12 +66,6 @@ int processClient(void *d) {
 	addr.sin_port = htons(PORT);
 
 
-	/* The pthread_detach() function marks the thread identified by thread as detached.
-	 * When a detached thread terminates, identified its resources are
-	 * automatically released back to the system
-	 * without the need for another thread to join with the terminated thread
-	 */
-	pthread_detach(tid);
 	int epollFd = epoll_create(MAX_EVENTS);
 	if (epollFd == -1) {
 		printf("epoll_create failed\n");
@@ -126,7 +127,7 @@ int processClient(void *d) {
 	unsigned long long nevt_receive = 0;
 	unsigned long long nr_close = 0;
 
-	for (;;loops++) {
+	for (;nr_close != PER_THREAD_MAX_SOCKET_FD;loops++) {
 
 		nfds = epoll_wait(epollFd, events, MAX_EVENTS, -1);
 		if (nfds == -1) {
@@ -204,8 +205,13 @@ int processClient(void *d) {
 		} // end for
 	} // while
 
-	for (i = 0; i < PER_THREAD_MAX_SOCKET_FD; ++i)
+	//double close?
+	for (i = 0; i < PER_THREAD_MAX_SOCKET_FD; ++i) {
 		close(fd[i]);
+	}
+
+	printf(" ^ ===> TID %04d exit\n", idx);
+	pthread_exit(0);
 	return 0;
 }
 

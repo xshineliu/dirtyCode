@@ -23,22 +23,36 @@
 #define PORT 80
 
 static int processClient();
+
+static int stop = 0;
+
 int main(int argc, char *argv[]) {
 	int i = 0;
+	int duration = 10;
 	pthread_t tid[THREAD_NUM];
+
 	for (i = 0; i < THREAD_NUM; ++i) {
 		pthread_create(&tid[i], NULL, (void*) &processClient, (void *)&i);
 	}
 
+	if(argc > 1){
+		duration = atoi(argv[1]);
+		if(duration < 1) {
+			duration = 10;
+		}
+	}
 
-	//sleep(10);
+	fprintf(stderr, "%s will run %d seconds", argv[0], duration);
+	sleep(duration);
+	stop = 1;
+
 
 	for (i = 0; i < THREAD_NUM; ++i) {
 		pthread_join(tid[i], NULL);
-		printf("%s thread %d joined\n", argv[0], i);
+		fprintf(stderr, "%s thread %d joined\n", argv[0], i);
 	}
 
-	printf("%s exit\n", argv[0]);
+	fprintf(stderr, "%s exit\n", argv[0]);
 	return 0;
 }
 
@@ -127,7 +141,7 @@ int processClient(void *d) {
 	unsigned long long nevt_receive = 0;
 	unsigned long long nr_close = 0;
 
-	for (;nr_close != PER_THREAD_MAX_SOCKET_FD;loops++) {
+	for ( ; (nr_close < PER_THREAD_MAX_SOCKET_FD); loops++) {
 
 		nfds = epoll_wait(epollFd, events, MAX_EVENTS, -1);
 		if (nfds == -1) {
@@ -212,6 +226,13 @@ int processClient(void *d) {
 				printf(" ? ===> TID %04d event %d not handled\n", idx, events[i].events);
 			}
 		} // end for
+
+
+		if(stop == 1) {
+			// close all handles
+			break;
+		}
+
 	} // while
 
 	//double close?

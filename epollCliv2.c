@@ -25,6 +25,7 @@
 static int processClient();
 
 static int stop = 0;
+int threadId[THREAD_NUM];
 
 int main(int argc, char *argv[]) {
 	int i = 0;
@@ -32,7 +33,8 @@ int main(int argc, char *argv[]) {
 	pthread_t tid[THREAD_NUM];
 
 	for (i = 0; i < THREAD_NUM; ++i) {
-		pthread_create(&tid[i], NULL, (void*) &processClient, (void *)&i);
+		threadId[i] = i;
+		pthread_create(&tid[i], NULL, (void*) &processClient, (void *)(&threadId[i]));
 	}
 
 	if(argc > 1){
@@ -131,7 +133,7 @@ int processClient(void *d) {
 	unsigned long long nr_close = 0;
 
 
-	printf("Thread %04lu running.\n", idx);
+	printf("Thread %04d running.\n", idx);
 	inet_aton("10.10.23.58", &srvIP);
 	addr.sin_family = AF_INET;
 	addr.sin_addr = srvIP;
@@ -167,7 +169,7 @@ int processClient(void *d) {
 		ret = connect(fd[i], (struct sockaddr*) &addr, sizeof(addr));
 		if (ret == -1) {
 			if (errno == EINPROGRESS) {
-				printf("TID %04lu connect in progress: %s\n", idx, strerror(errno));
+				//printf("TID %04lu connect in progress: %s\n", idx, strerror(errno));
 				continue;
 			} else {
 				printf("TID %04lu connect error: %s\n", idx, strerror(errno));
@@ -199,8 +201,8 @@ int processClient(void *d) {
 			return -1;
 		}
 		nevt += (unsigned int)nfds;
-		printf("Loops %06llu TID %04lu active event number is %d (%ld %ld/%ld/%ld)\n",
-				loops, idx, nfds, nevt, nevt_send, nevt_receive, nr_close);
+		//printf("Loops %06llu TID %04lu active event number is %d (%ld %ld/%ld/%ld)\n",
+		//		loops, idx, nfds, nevt, nevt_send, nevt_receive, nr_close);
 		for (i = 0; i < nfds; i++) {
 			/*
 			 if ((events[i].events & EPOLLERR) ||
@@ -216,7 +218,7 @@ int processClient(void *d) {
 			 */
 			if (events[i].events & EPOLLOUT) {
 
-				memset(sendbuf, 0, sizeof(sendbuf));
+				//memset(sendbuf, 0, sizeof(sendbuf));
 				sprintf(sendbuf, "GET /2.html HTTP/1.1\r\n Connection: Close\r\n\r\n");
 				ret = send(events[i].data.fd, sendbuf, strlen(sendbuf), 0);
 				if (ret == -1) {
@@ -227,8 +229,8 @@ int processClient(void *d) {
 					continue;
 				}
 				nevt_send++;
-				printf(" ===> TID %04lu send %d bytes (x %ld).\n",
-						idx, strlen(sendbuf), nevt_send);
+				//printf(" ===> TID %04lu send %d bytes (x %ld).\n",
+				//		idx, strlen(sendbuf), nevt_send);
 				// add revelant socket read event
 				ev.data.fd = events[i].data.fd;
 				ev.events = EPOLLIN | EPOLLET;
@@ -237,7 +239,7 @@ int processClient(void *d) {
 			} else if (events[i].events & EPOLLIN) {
 
 				int count = 0;
-				memset(recvbuf, 0, sizeof(recvbuf));
+				//memset(recvbuf, 0, sizeof(recvbuf));
 				count = recv(events[i].data.fd, recvbuf, sizeof(recvbuf), 0);
 				if (count == -1) {
 					/* If errno == EAGAIN, that means we have read all
@@ -253,20 +255,23 @@ int processClient(void *d) {
 
 					close(events[i].data.fd);
 					nr_close++;
-					printf(" * ===> TID %04lu closed total %d\n", idx, nr_close);
+					//printf(" * ===> TID %04lu closed total %d\n", idx, nr_close);
 
 					//reconnect
 					events[i].data.fd = reconnect(epollFd, &set, sizeof(set),
 							(struct sockaddr*) &addr, sizeof(addr));
 					if(events[i].data.fd < 0) {
-						printf(" * ===> TID %04lu reconnect failed\n", idx);
 						nr_conn--;
+						printf(" * ===> TID %04lu reconnect for slot %d failed, %d conn left\n",
+								idx, i, nr_conn);
+
 					}
 					continue;
 				}
 				nevt_receive++;
-				printf(" + ===> TID %04lu receive data is: %d %d (x %ld)\n",
-						idx, strlen(recvbuf), count, nevt_receive);
+
+				//printf(" + ===> TID %04lu receive data is: %d %d (x %ld)\n",
+				//		idx, strlen(recvbuf), count, nevt_receive);
 
 
 				ev.data.fd = events[i].data.fd;
@@ -299,7 +304,7 @@ int processClient(void *d) {
 	}
 
 
-	printf(" ^ ===> TID %04d exit total loop %d (%ld %ld/%ld/%ld)\n",
+	printf(" ^ ===> TID %04d exit, total loop %d (%ld %ld/%ld/%ld)\n",
 			idx, loops, nevt, nevt_send, nevt_receive, nr_close);
 	pthread_exit(0);
 	return 0;

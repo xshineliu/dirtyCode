@@ -16,9 +16,10 @@
 #include <pthread.h>
 #include <sys/epoll.h>
 
-#define THREAD_NUM   10
+#define THREAD_NUM   1
 #define PER_THREAD_MAX_SOCKET_FD 20
-#define MAX_EVENTS 32768
+/* just a hint for the kernel */
+#define MAX_EVENTS 1024
 
 #define PORT 80
 
@@ -134,7 +135,8 @@ int processClient(void *d) {
 
 
 	printf("Thread %04d running.\n", idx);
-	inet_aton("10.10.23.58", &srvIP);
+	//inet_aton("10.10.23.58", &srvIP);
+	inet_aton("10.3.21.217", &srvIP);
 	addr.sin_family = AF_INET;
 	addr.sin_addr = srvIP;
 	addr.sin_port = htons(PORT);
@@ -219,11 +221,14 @@ int processClient(void *d) {
 			if (events[i].events & EPOLLOUT) {
 
 				//memset(sendbuf, 0, sizeof(sendbuf));
-				sprintf(sendbuf, "GET /2.html HTTP/1.1\r\n Connection: Close\r\n\r\n");
+				//sprintf(sendbuf, "GET /2.html HTTP/1.1\n\n");
+				sprintf(sendbuf, "GET /2.html HTTP/1.1\nHost: 10.10.23.58\nConnection: Close\n\n");
+				//sprintf(sendbuf, "GET /2.html HTTP/1.1\nHost: 10.3.21.217\nConnection: Close\n\n");
 				ret = send(events[i].data.fd, sendbuf, strlen(sendbuf), 0);
 				if (ret == -1) {
 					if (errno != EAGAIN) {
 						printf("TID %04u send error: %s\n", idx, strerror(errno));
+						// TODO epoll cleanup
 						close(events[i].data.fd);
 					}
 					continue;
@@ -246,6 +251,7 @@ int processClient(void *d) {
 					 data. So go back to the main loop. */
 					if (errno != EAGAIN) {
 						printf("TID %04lu read error\n", idx);
+						// TODO epoll cleanup
 						close(events[i].data.fd);
 					}
 					continue;
@@ -253,6 +259,10 @@ int processClient(void *d) {
 					/* End of file. The remote has closed the
 					 connection. */
 
+					ev.data.fd = events[i].data.fd;
+					/* wait for server to close, ACK with FIN */
+					ev.events = 0;
+					epoll_ctl(epollFd, EPOLL_CTL_DEL, events[i].data.fd, &ev);
 					close(events[i].data.fd);
 					nr_close++;
 					//printf(" * ===> TID %04lu closed total %d\n", idx, nr_close);
@@ -309,4 +319,3 @@ int processClient(void *d) {
 	pthread_exit(0);
 	return 0;
 }
-

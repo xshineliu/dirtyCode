@@ -1,4 +1,13 @@
 /* gcc -o blkaio blockAio.c -mrdrnd -laio */
+/* 
+
+./blkaio -l 1 -s 4 -v 5
+ops=1048576, got=1048576, n=0.
+submit	checking	time	BW
+1048576	1048576	27631.234750	148.238
+
+**/
+
 
 #include <stdio.h>
 #include <fcntl.h>

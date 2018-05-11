@@ -1,4 +1,3 @@
-
 #define _GNU_SOURCE
 #define _FILE_OFFSET_BITS 64
 
@@ -113,12 +112,13 @@ struct ioTestResult *blkIOTest(const char* path) {
 			return NULL;
 	}
 
-	msg.ts.tv_sec = 5;
+	msg.ts.tv_sec = 10;
 	msg.ts.tv_nsec = 0;
 	msg.e = calloc(depth, sizeof(struct io_event));
 	msg.io = calloc(depth, sizeof(struct iocb));
 	msg.ios = calloc(depth, sizeof(struct iocb*));
 	msg.buf = calloc(depth, sizeof(void *));
+
 	// TODO check
 
 	for (i = 0; i < depth; i++) {
@@ -135,8 +135,8 @@ struct ioTestResult *blkIOTest(const char* path) {
 		io_prep_pread(msg.ios[i], fd, msg.buf[i], BUF_SIZE, pos);
 		/* Must setup after io_prep_pread */
 		msg.io[i].data = (void *)(intptr_t) i;
-		printf("%i: Set iocb=%016p ptr=%016p pos=%016x %x\n",
-				i, msg.ios[i], msg.buf[i], pos, msg.io[i].data);
+		//printf("%i: Set iocb=%016p ptr=%016p pos=%016x %x\n",
+		//		i, msg.ios[i], msg.buf[i], pos, msg.io[i].data);
 	}
 
 	start_us = time_us(&now_ns);
@@ -151,7 +151,7 @@ struct ioTestResult *blkIOTest(const char* path) {
 
 	got = 0;
 	while(1) {
-		ret = io_getevents(*ctx, 1, depth, msg.e, NULL);
+		ret = io_getevents(*ctx, 1, depth, msg.e, &(msg.ts));
 		if (ret < 1) {
 			perror("ret < 1");
 			// ***;
@@ -163,8 +163,8 @@ struct ioTestResult *blkIOTest(const char* path) {
 			j = (int) (intptr_t) msg.e[i].data;
 			myRes->res[j] = delta;
 			got++;
-			printf("%i: Got %d ptr=%016p %d\n", i, j,
-					msg.e[i].obj, ((struct iocb *)(msg.e[i].obj))->data);
+			//printf("%i: Got %d ptr=%016p %d\n", i, j,
+			//		msg.e[i].obj, ((struct iocb *)(msg.e[i].obj))->data);
 		}
 
 		if (got >= batch) {
@@ -194,6 +194,9 @@ struct ioTestResult *blkIOTest(const char* path) {
 int main(int argc, char* argv[]) {
 
 	const char *dev = "/dev/sda";
+	if(argc > 1) {
+		dev = argv[1];
+	}
 	//fprintf(stdout, "%s: %.03f GiB\n", dev, (double)getDiskSize(dev)/1024.0f/1024.0f/1024.0f);
 
 	blkIOTest(dev);

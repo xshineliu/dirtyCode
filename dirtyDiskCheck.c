@@ -54,8 +54,9 @@ size_t getDiskSize(const char* path) {
 	size_t file_size_in_bytes = 0;
 	int fd = open(path, O_RDONLY | O_DIRECT);
 	if(fd < 0) {
-		err("File not exist.\n");
-		return 0;
+		perror("File not exists");
+		printf("Error: 0\n");
+		exit(1);
 	}
 	// option another method
 	// off_t file_size_in_bytes = lseek(fd, 0, SEEK_END);
@@ -84,6 +85,7 @@ struct ioTestResult *blkIOTest(const char* path) {
 	struct timespec now_ns;
 	double start_us;
 	double delta;
+	double avg = -1;
 
 	void *ptr = NULL;
 
@@ -102,14 +104,16 @@ struct ioTestResult *blkIOTest(const char* path) {
 
 	if (io_setup(depth, ctx) != 0) {
 		fprintf(stderr, "%s: io_setup error\n", __func__);
-		return NULL;
+		printf("Error: 0\n");
+		exit(3);
 	}
 
 	fd = open(path, O_RDONLY);
 	if(fd < 0) {
 			err("File not exist.\n");
 			io_destroy(*ctx);
-			return NULL;
+			printf("Error: 0\n");
+			exit(3);
 	}
 
 	msg.ts.tv_sec = 10;
@@ -120,9 +124,19 @@ struct ioTestResult *blkIOTest(const char* path) {
 	msg.buf = calloc(depth, sizeof(void *));
 
 	// TODO check
+	if (myRes == NULL || msg.e == NULL || msg.io == NULL || msg.ios == NULL || msg.buf == NULL) {
+		fprintf(stderr, "No memory\n");
+		printf("Error: 0\n");
+		exit(0);
+	}
 
 	for (i = 0; i < depth; i++) {
-		posix_memalign(&ptr, pagesize, BUF_SIZE);
+		ret = posix_memalign(&ptr, pagesize, BUF_SIZE);
+		if (ret != 0) {
+			fprintf(stderr, "No memory\n");
+			printf("Error: 0\n");
+			exit(0);
+		}
 		memset(ptr, 0, BUF_SIZE);
 		msg.buf[i] = ptr;
 		//msg.io[i].data = (void *)(intptr_t) i;
@@ -146,7 +160,8 @@ struct ioTestResult *blkIOTest(const char* path) {
 		// TODO free memory ...
 		fprintf(stderr, "%s io_submit of %d request error: ret=%d\n",
 				__func__, batch, ret);
-		return NULL;
+		printf("Error: 0\n");
+		exit(4);
 	}
 
 	got = 0;
@@ -154,7 +169,10 @@ struct ioTestResult *blkIOTest(const char* path) {
 		ret = io_getevents(*ctx, 1, depth, msg.e, &(msg.ts));
 		if (ret < 1) {
 			perror("ret < 1");
-			// ***;
+			// TIMEOUT
+			fprintf(stderr, "%s TIME OUT %d\n", msg.ts.tv_sec);
+			printf("Error: -1\n");
+			exit(-1);
 		}
 
 		delta = time_us(&now_ns) - start_us;
@@ -174,7 +192,9 @@ struct ioTestResult *blkIOTest(const char* path) {
 		if (delta > 10000000.0f) {
 			fprintf(stderr, "%s time out with %.03f, got %d out of %d\n",
 					__func__, delta, got, batch);
-			break;
+			//break;
+			printf("Error: -1\n");
+			exit(-1);
 		}
 	}
 
@@ -182,9 +202,11 @@ struct ioTestResult *blkIOTest(const char* path) {
 	// TODO memory clean up
 
 	for(i = 0; i < batch; i++) {
-		printf("%d: %.03f\n", i, myRes->res[i]);
+		avg += myRes->res[i];
+		fprintf(stderr, "%d: %.03f\t", i, myRes->res[i]);
 	}
-
+	fprintf(stderr, "\n");
+	printf("Success: %.03f\n", avg / batch);
 	return myRes;
 
 }
@@ -203,4 +225,3 @@ int main(int argc, char* argv[]) {
 	return 0;
 
 }
-

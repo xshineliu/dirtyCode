@@ -7,7 +7,6 @@
 #define N4KGIB (1024 * 256)
 #define MAX_COUNT (4 * N4KGIB)
 
-
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdint.h>
@@ -22,206 +21,167 @@
 
 #include <libaio.h>
 
+#define NBYTES 4096
+#define DEF_DEPTH   16
 
+inline int die_no_mem(int hit, int lineno) {
+	if (hit) {
+		perror("No Mem");
+		fprintf(stderr, "Exit from line %d\n", lineno);
+		exit(-lineno);
+	}
+}
 
-struct ioTestResult {
-	int n;
-	float res[];
-};
+inline int die_general(int hit, int lineno, io_context_t *pctx) {
+	if (hit) {
+		perror("Error");
+		fprintf(stderr, "Exit from line %d\n", lineno);
 
+		if(pctx != NULL) {
+			io_destroy(*pctx);
+		}
 
-struct SharedMsg {
-	io_context_t ctx;
-	int elems;
-	struct io_event *e;
-	struct iocb *io;
-	struct iocb* *ios;
-	void* *buf;
-	struct timespec ts;
-};
+		exit(-lineno);
+	}
+}
 
 double time_us(struct timespec* const ts) {
 	if (clock_gettime(CLOCK_REALTIME, ts)) {
 		perror("clock_gettime Error");
 		exit(1);
 	}
-	return ((double) ts->tv_sec) * 1000000.f
-		+ (double) ts->tv_nsec / 1000.f;
+	return ((double) ts->tv_sec) * 1000000.f + (double) ts->tv_nsec / 1000.f;
 }
 
+int doAIOTest(const char* filename, int depth) {
 
-size_t getDiskSize(const char* path) {
-	size_t file_size_in_bytes = 0;
-	int fd = open(path, O_RDONLY | O_DIRECT);
-	if(fd < 0) {
-		perror("File not exists");
-		printf("Error: 0\n");
-		exit(1);
-	}
-	// option another method
-	// off_t file_size_in_bytes = lseek(fd, 0, SEEK_END);
-	ioctl(fd, BLKGETSIZE64, &file_size_in_bytes);
-	close(fd);
-	return file_size_in_bytes;
-}
+	int fd, rc, got, j, k, nbytes = NBYTES, maxevents = DEF_DEPTH;
 
-struct ioTestResult *blkIOTest(const char* path) {
-	struct SharedMsg msg;
-	io_context_t *ctx = NULL;
-	int pagesize = sysconf(_SC_PAGESIZE);
+	void *ptr = NULL;
+	/* GNU C extention */
+	char *buf[depth];
+	float lat[depth], avg = 0.0f;
+	/* no need to zero iocbs; will be done in io_prep_pread */
+	struct iocb iocbray[depth], *iocb, *iocbp[depth];
+	/* need clear? */
+	struct io_event events[2 * depth];
+	off_t offset;
+	io_context_t ctx = 0;
 
-
-	int depth = 16; /* default io depth */
-	int batch = depth;
-	int got = 0;
-	int fd = -1;
-	int ret = -1;
-	int i = 0, j = 0;
-	size_t pos = 0;
-	size_t nr_4k = getDiskSize(path) / BUF_SIZE;
-	unsigned long long rndval = 0;
-
+	struct timespec timeout = { 10, 0 };
 
 	struct timespec now_ns;
 	double start_us;
 	double delta;
-	double avg = -1;
 
-	void *ptr = NULL;
+	long long unsigned int rndval;
+	size_t nr_4k;
 
+	//printf("opening %s\n", filename);
 
-	if(nr_4k < 1) {
-		return NULL;
+	/* notice opening with these flags won't hurt a device node! */
+
+	if ((fd = open(filename, O_RDONLY | O_DIRECT,
+			S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP)) < 0) {
+		printf("couldn't open %s, ABORTING\n", filename);
+		exit(-1);
 	}
 
-	struct ioTestResult *myRes = calloc(1, sizeof(struct ioTestResult) +
-			depth* sizeof(float));
-	// TODO check
+	size_t file_size_in_bytes = 0;
+	// option another method
+	// off_t file_size_in_bytes = lseek(fd, 0, SEEK_END);
+	ioctl(fd, BLKGETSIZE64, &file_size_in_bytes);
+	nr_4k = file_size_in_bytes / NBYTES;
 
-	memset(&msg, 0, sizeof(struct SharedMsg));
+	posix_memalign(&ptr, 4096, NBYTES * depth);
+	die_no_mem((ptr == NULL), __LINE__);
 
-	ctx = &(msg.ctx);
+	/* write initial data out, clear buffers, allocate iocb's */
 
-	if (io_setup(depth, ctx) != 0) {
-		fprintf(stderr, "%s: io_setup error\n", __func__);
-		printf("Error: 0\n");
-		exit(3);
+	for (j = 0; j < depth; j++) {
+		buf[j] = (char *) (ptr + NBYTES * j);
 	}
 
-	fd = open(path, O_RDONLY);
-	if(fd < 0) {
-			err("File not exist.\n");
-			io_destroy(*ctx);
-			printf("Error: 0\n");
-			exit(3);
-	}
+	/* prepare the context */
+	rc = io_setup(maxevents, &ctx);
+	die_general((rc < 0), __LINE__, &ctx);
 
-	msg.ts.tv_sec = 10;
-	msg.ts.tv_nsec = 0;
-	msg.e = calloc(depth, sizeof(struct io_event));
-	msg.io = calloc(depth, sizeof(struct iocb));
-	msg.ios = calloc(depth, sizeof(struct iocb*));
-	msg.buf = calloc(depth, sizeof(void *));
+	/* (async) read the data from the file */
 
-	// TODO check
-	if (myRes == NULL || msg.e == NULL || msg.io == NULL || msg.ios == NULL || msg.buf == NULL) {
-		fprintf(stderr, "No memory\n");
-		printf("Error: 0\n");
-		exit(0);
-	}
+	for (j = 0; j < depth; j++) {
+		lat[j] = 0.0f;
 
-	for (i = 0; i < depth; i++) {
-		ret = posix_memalign(&ptr, pagesize, BUF_SIZE);
-		if (ret != 0) {
-			fprintf(stderr, "No memory\n");
-			printf("Error: 0\n");
-			exit(0);
-		}
-		memset(ptr, 0, BUF_SIZE);
-		msg.buf[i] = ptr;
-		//msg.io[i].data = (void *)(intptr_t) i;
-
-		msg.ios[i] = msg.io + i;
-
+		iocb = &iocbray[j];
 		__builtin_ia32_rdrand64_step(&rndval);
-		pos = rndval % nr_4k;
-
-		io_prep_pread(msg.ios[i], fd, msg.buf[i], BUF_SIZE, pos);
-		/* Must setup after io_prep_pread */
-		msg.io[i].data = (void *)(intptr_t) i;
-		//printf("%i: Set iocb=%016p ptr=%016p pos=%016x %x\n",
-		//		i, msg.ios[i], msg.buf[i], pos, msg.io[i].data);
+		offset = rndval % nr_4k;
+		offset *= NBYTES;
+		io_prep_pread(iocb, fd, (void *) buf[j], NBYTES, offset);
+		// !!! io_prep_pread have zeroed *iocb
+		iocb->data = (void *) (intptr_t) j;
+		iocbp[j] = iocb;
+		//rc = io_submit(ctx, 1, &iocb);
+		//die_general((rc != 1), __LINE__, &ctx);
 	}
+
+	rc = io_submit(ctx, depth, iocbp);
+	die_general((rc != depth), __LINE__, &ctx);
 
 	start_us = time_us(&now_ns);
 
-	if ((ret = io_submit(*ctx, batch, msg.ios)) != batch) {
-		io_destroy(*ctx);
-		// TODO free memory ...
-		fprintf(stderr, "%s io_submit of %d request error: ret=%d\n",
-				__func__, batch, ret);
-		printf("Error: 0\n");
-		exit(4);
-	}
-
+	/* sync up and print out the readin data */
 	got = 0;
-	while(1) {
-		ret = io_getevents(*ctx, 1, depth, msg.e, &(msg.ts));
-		if (ret < 1) {
-			perror("ret < 1");
-			// TIMEOUT
-			fprintf(stderr, "%s TIME OUT %d\n", msg.ts.tv_sec);
-			printf("Error: -1\n");
-			exit(-1);
-		}
+	while (1) {
+		rc = io_getevents(ctx, 1, DEF_DEPTH, events, &timeout);
+		die_general((rc < 1), __LINE__, &ctx);
 
 		delta = time_us(&now_ns) - start_us;
+		if (rc > 0) {
+			got += rc;
+			//printf(" rc from io_getevents on the read = %d\n", rc);
+			for (k = 0; k < rc; k++) {
+				j = (int) (intptr_t) events[k].data;
+				lat[j] = delta;
+				//printf("%i: Got %d ptr=%016p %d\n", k, j,
+				//		events.obj, ((struct iocb *)(events.obj))->data);
+			}
 
-		for (i = 0; i < ret; i++) {
-			j = (int) (intptr_t) msg.e[i].data;
-			myRes->res[j] = delta;
-			got++;
-			//printf("%i: Got %d ptr=%016p %d\n", i, j,
-			//		msg.e[i].obj, ((struct iocb *)(msg.e[i].obj))->data);
+			if (got >= depth) {
+				break;
+			}
 		}
 
-		if (got >= batch) {
-			break;
-		}
-
+		// timeout
 		if (delta > 10000000.0f) {
 			fprintf(stderr, "%s time out with %.03f, got %d out of %d\n",
-					__func__, delta, got, batch);
-			//break;
+					__func__, delta, got, depth);
 			printf("Error: -1\n");
 			exit(-1);
 		}
 	}
 
-	myRes->n = got;
-	// TODO memory clean up
-
-	for(i = 0; i < batch; i++) {
-		avg += myRes->res[i];
-		fprintf(stderr, "%d: %.03f\t", i, myRes->res[i]);
+	for (k = 0; k < depth; k++) {
+		fprintf(stderr, "%d: %.03f\t", k, lat[k]);
+		avg += lat[k];
 	}
-	fprintf(stderr, "\n");
-	printf("Success: %.03f\n", avg / batch);
-	return myRes;
 
+	fprintf(stderr, "\n");
+	printf("Success: %.03f\n", avg / depth);
+
+	/* clean up */
+	rc = io_destroy(ctx);
+	close(fd);
 }
 
+int main(int argc, char *argv[]) {
+	char* filename = "/dev/sda";
 
+	/* open or create the file and fill it with a pattern */
 
-int main(int argc, char* argv[]) {
-
-	const char *dev = "/dev/sda";
-	if(argc > 1) {
-		dev = argv[1];
+	if (argc > 1) {
+		filename = argv[1];
 	}
-	//fprintf(stdout, "%s: %.03f GiB\n", dev, (double)getDiskSize(dev)/1024.0f/1024.0f/1024.0f);
 
-	blkIOTest(dev);
-	return 0;
+	doAIOTest(filename, DEF_DEPTH);
 
+	exit(0);
 }

@@ -25,13 +25,18 @@
 #include <arpa/inet.h>
 
 #define NR_MAX_THREADS 256
-#define MAX_CONN_PER_THREAD 8192
-#define FLUSH_DURATION_FORCED 300
+#define MAX_CONN_PER_THREAD 10240
+#define FLUSH_DURATION_DEFAULT 300
+#define FLUSH_DURATION_VARIABLE 180
 #define NR_MAX_POLL 128
 #define TEST_IDX 0
 #define EXIT_DELAY 1
 #define NET_READ_BUF (4 * 1024) // 4 KiB
-#define DATA_BLOCK_SIZE (256 * 1024) //256 KiB
+#define DEFAULT_DATA_BLOCK_SIZE (128 * 1024) //128 KiB
+#define STEP_DATA_BLOCK_SIZE (128 * 1024) //128 KiB
+#define MAX_DATA_BLOCK_SIZE (1024 * 1024) // 1MiB
+
+#define REALLOC_LAT 180
 
 #define MAX_DIR_NUM 32
 #define PATH_PREFIX_MAX_LEN 16
@@ -40,7 +45,7 @@
 int conn_slot_lock[NR_MAX_THREADS] = { 0, };
 char path_prefix[MAX_DIR_NUM][PATH_PREFIX_MAX_LEN];
 
-#define LOCK(a) while(__sync_lock_test_and_set(&a, 1)) {;}
+#define LOCK(a) while(!__sync_bool_compare_and_swap(&a, 0, 1)) {;}
 #define UNLOCK(a) __sync_lock_release(&a);
 
 int goToStop = 0;
@@ -118,6 +123,7 @@ struct session {
 
 	// ipv4 only now
 	int ip;
+	int flush_duration;
 
 	int events;
 	int socket_fd;
@@ -128,6 +134,9 @@ struct session {
 	int dir_switch_idf;
 	int need_delay_free;
 	int time_out_need_flush_to_disk;
+
+	int mem_buf_len;
+	int start_ticks;
 
 	unsigned long long last_disk_io_write_tick;
 };
@@ -170,21 +179,21 @@ int session_set_on_disk_log_filename(struct session *s) {
 	char date_str2[16];
 	char ip_str1[16];
 	char ip_str2[16];
-	char *p;
+	unsigned char *p;
 
 	int ip = s->ip;
 
 	strftime(date_str1, 9, "%Y%m%d", &(gstats.cur_tm));
 	strftime(date_str2, 11, "%Y%m%d%H", &(gstats.cur_tm));
 
-	p = (char *) &ip;
+	p = (unsigned char *) &ip;
 	sprintf(ip_str1, "%03u_%03u_%03u_%03u", p[3] & 0xFF, p[2] & 0xFF,
 			p[1] & 0xFF, 0);
 	sprintf(ip_str2, "%03u_%03u_%03u_%03u", p[3] & 0xFF, p[2] & 0xFF,
 			p[1] & 0xFF, p[0] & 0xFF);
 
 	// "/data%2d/log/%s/%s/%s/%s.%s.log"
-	sprintf(fileName, DEFAULT_DIR_PREFIX, s->threadidx % cfg.nr_dir + 1,
+	sprintf(fileName, DEFAULT_DIR_PREFIX, p[0] % cfg.nr_dir + 1,
 			date_str1, date_str2, ip_str1, ip_str2, date_str2);
 
 	if (mkpath(fileName, 0755)) {
@@ -219,13 +228,14 @@ struct session* get_new_session(int ip, int events, int socket_fd, int tid) {
 		return NULL;
 	}
 
-	s->buf1 = calloc(2, DATA_BLOCK_SIZE);
+	s->buf1 = calloc(2, DEFAULT_DATA_BLOCK_SIZE);
 	if (s->buf1 == NULL) {
 		free(s);
 		return NULL;
 	}
 
-	s->buf2 = s->buf1 + DATA_BLOCK_SIZE;
+	s->mem_buf_len = DEFAULT_DATA_BLOCK_SIZE;
+	s->buf2 = s->buf1 + DEFAULT_DATA_BLOCK_SIZE;
 	s->cur_buf = s->buf1;
 	s->disk_buf = NULL;
 	s->need_delay_free = 0;
@@ -239,6 +249,9 @@ struct session* get_new_session(int ip, int events, int socket_fd, int tid) {
 	s->on_disk_fd = -1;
 	// s->slot_idx is set in the last step of get session
 	s->slot_idx = -1;
+
+	s->flush_duration = FLUSH_DURATION_DEFAULT + ip % FLUSH_DURATION_VARIABLE;
+	s->start_ticks = gstats.ticks;
 
 	switch (cfg.dir_switch_soruce) {
 	default:
@@ -812,8 +825,8 @@ int disk_write_thread(void *data) {
 				// transaction finished
 
 				if ((s->membuf_offset > 0)
-						&& (gstats.ticks - s->last_disk_io_write_tick)
-								> FLUSH_DURATION_FORCED
+						&& ((gstats.ticks - s->last_disk_io_write_tick)
+								> (s->flush_duration))
 						&& !(s->time_out_need_flush_to_disk)
 						// in case s->time_out_need_flush_to_disk set to zero again
 						//              require s->disk_buf null, and
@@ -824,6 +837,8 @@ int disk_write_thread(void *data) {
 					// do not need lock, as 1->0->1->0 is a logical sequence, and "set 1" only occurs here
 					s->time_out_need_flush_to_disk = 1;
 					// to avoid race condition logic, sched to next check point
+
+					// TODO random s->flush_duration for next
 
 					if (cfg.verbose > 2) {
 						fprintf(stderr,
@@ -877,7 +892,7 @@ int disk_write_thread(void *data) {
 					if (session_set_on_disk_log_filename(s) != -1) {
 						s->dir_switch_idf = dir_switch_source;
 					}
-					if (cfg.verbose > 1) {
+					if (cfg.verbose > 2) {
 						fprintf(stderr,
 								"[INFO] *** Switch DIR result thread %d cfg %d session %d gstats %d\n",
 								s->threadidx, cfg.dir_switch_soruce,
@@ -910,7 +925,7 @@ int disk_write_thread(void *data) {
 					if (cfg.verbose > 0) {
 						fprintf(stderr,
 								"[DEBUG] ^^^ delay free with length %d for fd %d thread %d/%d ip %08x, d %p m %p %p %p\n",
-								s->disk_write_len, s->socket_fd, s->threadidx, s->slot_idx, s->ip,
+									s->disk_write_len, s->socket_fd, s->threadidx, s->slot_idx, s->ip,
 								s->disk_buf, s->cur_buf, s->buf1, s->buf2);
 					}
 					free_session_res(s);
@@ -927,7 +942,61 @@ int disk_write_thread(void *data) {
 	return 0;
 }
 
-/* s->lock maybe hold by */
+// must be called with s->lock held, and s->disk_io_in_progress not 1
+// return 0 on successful
+int enlarge_session_buf(struct session *s) {
+
+	void *newptr = NULL, *oldptr = s->buf1;
+	int oldlen = s->mem_buf_len;
+	int newlen = s->mem_buf_len + STEP_DATA_BLOCK_SIZE;
+
+	// disk io pending or in progress, lock held
+	if (newlen > MAX_DATA_BLOCK_SIZE) {
+		// not allowed, exceeding the max size
+		return 1;
+	}
+	if((gstats.ticks - s->start_ticks) < REALLOC_LAT ) {
+		// not in steady status
+		return 2;
+	}
+
+	newptr = calloc(2, newlen);
+	if(!newptr) {
+		if (cfg.verbose > 1) {
+			fprintf(stderr,
+				"[INFO] T: %d Realloc session %d/%d buf failed, will discard incoming %08x pkt\n",
+				gstats.ticks - s->start_ticks, s->threadidx, s->slot_idx, s->ip);
+		}
+		// no memory
+		return -1;
+	}
+
+	s->buf1 = newptr;
+	s->mem_buf_len = newlen;
+	s->buf2 = newptr + s->mem_buf_len;
+
+	memcpy(s->buf1, s->cur_buf, s->membuf_offset);
+	assert(s->disk_buf != NULL);
+	memcpy(s->buf2, s->disk_buf, s->disk_write_len);
+
+	s->cur_buf = s->buf1;
+	s->disk_buf = s->buf2;
+
+	free(oldptr);
+
+	if (cfg.verbose > 1) {
+		fprintf(stderr,
+			"[INFO] T: %d Realloc session %d/%d mbuf %p dbuf %p, len %d for source %08x successful\n",
+				gstats.ticks - s->start_ticks, s->threadidx, s->slot_idx,
+				s->cur_buf, s->disk_buf, s->mem_buf_len, s->ip);
+	}
+
+	// length field keep unchanged
+	return 0;
+
+}
+
+// s->lock maybe hold by
 
 int pass2write(struct session *s, void *buf, int len) {
 
@@ -937,31 +1006,62 @@ int pass2write(struct session *s, void *buf, int len) {
 		return -1;
 	}
 
+recheck:
 	// there is case timer expire write threads is or will access s->cur_buf and etc
 	// there is slot time_out_need_flush_to_disk already 1, but s->cur_buf and etc not updated
 	// this is race condition, a write thread is access s->disk_buf
 	// all these race condition need be handled
 
-	if (s->membuf_offset + len > DATA_BLOCK_SIZE) {
+	if ((s->membuf_offset + len) > s->mem_buf_len) {
 
 		LOCK(s->disk_io_ops_lock);
+
+		// we need to write data to disk, and switch pointers, but first checking if it is safe
 
 		// check whether s->disk_buf is hold by disk io thread
 		// io in submit progress or in progress, s->disk_buf could not be updated
 		// disk_buf not NULL, maybe disk_io_in_progress not started yet
 		if (s->disk_buf || s->disk_io_in_progress) {
-			// message discard
-			// warn TODO
-			UNLOCK(s->disk_io_ops_lock);
-			if (cfg.verbose > 1) {
-				fprintf(stderr,
-						"[INFO] \t\tthread %d/%d ip %08x discard fd %d with msg_len %d, "
-								"mem_buf %p (len %d) dis_buf %p (len %d) and io_in_progress %d\n",
-						s->threadidx, s->slot_idx, s->ip, s->socket_fd, len, s->cur_buf,
-						s->membuf_offset, s->disk_buf, s->disk_write_len, s->disk_io_in_progress);
+
+			// io pending not in progress
+			if(s->disk_buf) {
+				if(enlarge_session_buf(s) != 0) {
+					// session buf not enlarged due to various reason
+					UNLOCK(s->disk_io_ops_lock);
+					if (cfg.verbose > 1) {
+						fprintf(stderr,
+								"[INFO] T %d: thread %d/%d ip %08x discard fd %d with msg_len %d, "
+										"mem_buf %p (len %d) dis_buf %p (len %d) and io_in_progress %d\n",
+								gstats.ticks - s->start_ticks, s->threadidx, s->slot_idx, s->ip, s->socket_fd, len,
+								s->cur_buf, s->membuf_offset, s->disk_buf, s->disk_write_len, s->disk_io_in_progress);
+					}
+					return -1;
+					// logic finished, end with pkt discard
+
+				} else {
+					// session buf enlarged go to re-check
+					UNLOCK(s->disk_io_ops_lock);
+					goto recheck;
+				}
+			} else {
+				// disk io in progress, s->disk_buf already NULL, but actually memory region in use due to not clone
+				UNLOCK(s->disk_io_ops_lock);
+				// spin on s->disk_io_in_progress, wait for buf
+				// TODO set timeout
+				while(s->disk_io_in_progress) {
+					;
+				}
+				// unlikely disk_io_in_progress re-enter, speculative skip re-checking :)))
+				// restore lock status
+				LOCK(s->disk_io_ops_lock);
 			}
-			return -1;
+
+			// finish process for the case buffer not large
 		}
+
+
+        // lock must be held in this point
+		// we are safe to switch buffer ***
 
 		// if s->time_out_need_flush_to_disk == 1;
 		// clear the flag, cancel the pending force flush write, as I will fire in this function
@@ -970,6 +1070,11 @@ int pass2write(struct session *s, void *buf, int len) {
 			s->time_out_need_flush_to_disk = 0;
 		}
 
+		// *** after enlarge buffer, it is NOT likely enter this logic, but maybe, nevertheless :)))
+		// passed checking, safe to switching buffer
+		//		or no io pending or in progress [most cases]
+		//		or if io pending, buf enlarged already
+		//		or io in progress has been exited during busy waiting
 		// write to disk, check switching to which buffer
 		if (s->cur_buf == s->buf1) {
 			s->cur_buf = s->buf2;
@@ -1068,7 +1173,7 @@ void drain_client(struct session *s) {
 
 	/* client closed. log it, tell epoll to forget it, close it */
 	if (cfg.verbose > 0) {
-		fprintf(stderr, "[INFO] thread %d client %d has closed\n", thread_idx,
+		fprintf(stderr, "[INFO] thread %d client %d will be closed\n", thread_idx,
 				fd);
 	}
 	del_session(s);
@@ -1096,14 +1201,27 @@ int process_thread(void *data) {
 
 		for (i = 0; i < ret; i++) {
 			/* regular POLLIN. handle the particular descriptor that's ready */
-			assert(ev[i].events & EPOLLIN);
+
 			struct session *s = ev[i].data.ptr;
+
+			//assert(ev[i].events & EPOLLIN);
+			if(!(ev[i].events & EPOLLIN) || ev[i].events & EPOLLERR) {
+				if (cfg.verbose > 0) {
+					fprintf(stderr, "[ERROR] * thread %d handle POLLIN error for event %x"
+							" on cli %08x\n", thread_idx, ev[i].events, s->ip);
+				}
+
+				del_session(s);
+				// delete_session_ptr(s) will be handled by del_session, to be delayed
+				continue;
+			}
 
 			if (cfg.verbose > 3) {
 				fprintf(stderr, "[DEBUG] * thread %d handle POLLIN on fd %d\n",
 						thread_idx, s->socket_fd);
 			}
 			drain_client(s);
+			// default as continue
 		}
 
 		if (goToStop) {
@@ -1129,7 +1247,6 @@ inline void init_gstat(void) {
 	time(&cur_time);
 	memset(&gstats, 0, sizeof(gstats));
 	localtime_r(&cur_time, &(gstats.cur_tm));
-
 }
 
 int main(int argc, char *argv[]) {

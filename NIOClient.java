@@ -1,4 +1,3 @@
-
 /**
  * 
  */
@@ -267,11 +266,14 @@ class WorkerThreads extends Thread {
 							// If you want to be notified when the peer closes the connection,
 							// OP_READ will fire and a read will return -1.			
 							if(nbytes == -1) {
-								s.close();
+								if(s.nread > 0) {
+									s.close();
+								}
 								aliveSession.remove(s);
+
 								sk.attach(null);
-								
 								sk.cancel();
+
 								ssc.close();
 								closed++;
 								
@@ -291,9 +293,11 @@ class WorkerThreads extends Thread {
 							s.close();
 						}
 						aliveSession.remove(s);
-						sk.attach(null);
 						
+						sk.attach(null);
 						sk.cancel();
+
+
 						try {
 							ssc.close();
 						} catch (IOException e1) {
@@ -324,6 +328,12 @@ class WorkerThreads extends Thread {
 						try {
 							SocketAddress raddr = sc.getRemoteAddress();
 							sc.close();
+							if(s.nread > 0) {
+								s.close();
+							}
+							
+							aliveSession.remove(s);
+							//sk.attach(null);
 
 							closed++;
 							it.remove();

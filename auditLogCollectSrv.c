@@ -24,11 +24,11 @@
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
-#define NR_MAX_THREADS 256
-#define MAX_CONN_PER_THREAD 10240
+#define NR_MAX_THREADS 64
+#define MAX_CONN_PER_THREAD 20480
 #define FLUSH_DURATION_DEFAULT 300
 #define FLUSH_DURATION_VARIABLE 180
-#define NR_MAX_POLL 128
+#define NR_MAX_POLL 1024
 #define TEST_IDX 0
 #define EXIT_DELAY 1
 #define NET_READ_BUF (4 * 1024) // 4 KiB
@@ -39,11 +39,9 @@
 #define REALLOC_LAT 180
 
 #define MAX_DIR_NUM 32
-#define PATH_PREFIX_MAX_LEN 16
 #define DEFAULT_DIR_PREFIX "/data%02d/log/%s/%s/%s/%s.%s.log"
 
 int conn_slot_lock[NR_MAX_THREADS] = { 0, };
-char path_prefix[MAX_DIR_NUM][PATH_PREFIX_MAX_LEN];
 
 #define LOCK(a) while(!__sync_bool_compare_and_swap(&a, 0, 1)) {;}
 #define UNLOCK(a) __sync_lock_release(&a);
@@ -114,8 +112,10 @@ struct session {
 	void *buf1;
 	void *buf2;
 
-	int disk_io_ops_lock;
-	int disk_io_in_progress;
+	int time_out_need_flush_to_disk;
+
+	volatile int disk_io_ops_lock;
+	volatile int disk_io_in_progress;
 
 	int threadidx;
 	// len to write
@@ -133,7 +133,6 @@ struct session {
 	int slot_idx;
 	int dir_switch_idf;
 	int need_delay_free;
-	int time_out_need_flush_to_disk;
 
 	int mem_buf_len;
 	int start_ticks;
@@ -312,14 +311,13 @@ void periodic() {
 			- gstats.last_disk_io_threads_busy_loops;
 	gstats.last_disk_io_threads_busy_loops = gstats.disk_io_threads_busy_loops;
 
-	fprintf(stdout, "up %d seconds\n", gstats.ticks);
-	fprintf(stdout, "alive    force_wr total_wr succ_fin failed_f polls_ps\n");
-	fprintf(stdout, "% 8d % 8d % 8d % 8d % 8d % 8.0f\n\n",
-			gstats.snapshot_session_alive,
-			gstats.period_succ_submit_disk_io_timer_expire_forced / diff_ticks,
-			gstats.period_succ_submit_disk_io / diff_ticks,
-			gstats.period_succ_finished_disk_io / diff_ticks,
-			gstats.period_failed_finished_disk_io / diff_ticks,
+	fprintf(stdout, "up_secs  alive    force_wr total_wr succ_fin failed_f polls_ps\n");
+	fprintf(stdout, "% 8d % 8d % 8.2f % 8.2f % 8.2f % 8.2f % 8.2f\n\n",
+			gstats.ticks, gstats.snapshot_session_alive,
+			(double)gstats.period_succ_submit_disk_io_timer_expire_forced / (double)diff_ticks,
+			(double)gstats.period_succ_submit_disk_io / (double)diff_ticks,
+			(double)gstats.period_succ_finished_disk_io / (double)diff_ticks,
+			(double)gstats.period_failed_finished_disk_io / (double)diff_ticks,
 			(double) busy_poll_loops
 					/ ((double) gstats.snapshot_session_alive + .001f)
 					/ (double) diff_ticks);

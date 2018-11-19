@@ -262,7 +262,7 @@ int session_set_on_disk_log_filename(struct session *s) {
 		return -1;
 	}
 
-	fd = open(fileName, O_CREAT | O_WRONLY | O_APPEND, S_IRUSR | S_IWUSR);
+	fd = open(fileName, O_CREAT | O_WRONLY | O_APPEND, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
 	// O_DIRECT need buf offset and len align, relax to use posix_fadvice
 
 	if(cfg.diskw_odirect) {

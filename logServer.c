@@ -101,6 +101,7 @@ struct {
 	int port; /* local port to listen on  */
 	int fd; /* listener descriptor      */
 
+	size_t max_file_size;
 	in_addr_t addr; /* local IP or INADDR_ANY   */
 
 	void *session_array[NR_MAX_THREADS]; /* point to sessions array */
@@ -117,7 +118,7 @@ struct {
 	int pid; /* our own pid              */
 	char log_idf[32];
 	char *prog;
-} cfg = { .nWorkers = 1, .nr_dir = 1,
+} cfg = { .nWorkers = 1, .nr_dir = 1, .max_file_size = 1UL * (2UL^30),
 		.addr = INADDR_ANY, /* by default, listen on all local IP's   */
 		.fd = -1, .signal_fd = -1, .epoll_fd = { -1, }, .dir_switch_period = 600};
 
@@ -171,6 +172,9 @@ struct session {
 
 	unsigned long long network_bytes;
 	unsigned long long disk_bytes;
+
+	// for file truncate use, avoid "lseek(s->on_disk_fd, 0, SEEK_CUR)" system call
+	size_t rough_file_offset;
 };
 
 
@@ -285,6 +289,7 @@ int session_set_on_disk_log_filename(struct session *s) {
 	}
 	// switch to new on-disk fd
 	s->on_disk_fd = fd;
+	s->rough_file_offset = 0;
 	return fd;
 }
 
@@ -326,6 +331,10 @@ struct session* get_new_session(int ip, int events, int socket_fd, int tid) {
 #ifdef DIR_SWITCH_MONTHLY
 	get_month_seq(&(s->monthly_seq));
 #endif
+
+	s->disk_bytes = 0;
+	s->network_bytes = 0;
+	s->rough_file_offset = 0;
 
 	// delay to call session_set_on_disk_log_filename, when need to write to disk
 	return s;
@@ -917,7 +926,57 @@ int write2disk(struct session *s) {
 	UNLOCK(s->disk_io_ops_lock);
 
 	s->disk_bytes += (towrite - nleft);
+	s->rough_file_offset += (towrite - nleft);
 	return towrite - nleft;
+}
+
+// called before write, only the disk write threads
+int handle_filesize_exceeded(struct session *s) {
+	if(s == NULL || s->on_disk_fd < 0) {
+		// not to handle
+		return 1;
+	}
+	// minimize system call
+	// size_t pos = lseek(s->on_disk_fd, 0, SEEK_CUR);
+	if(s->rough_file_offset < cfg.max_file_size) {
+		//printf("^^^ %x %x %x %x\n", s->rough_file_offset,
+		//		s->network_bytes, s->disk_bytes, cfg.max_file_size);
+		return 0;
+	}
+
+	char fname[64] = {0,};
+	char srcf[512] = {0,};
+	char dstf[512] = {0,};
+	sprintf(fname, "/proc/self/fd/%d", s->on_disk_fd);
+	int ret = readlink(fname, srcf, 1024);
+
+	if(fname[0] == 0 || ret == -1) {
+		// error!!! FIXME
+		printf("[ERROR] readlink error %d %x %x %x %x %s %s %s\n", ret, s->rough_file_offset,
+				s->network_bytes, s->disk_bytes, cfg.max_file_size, fname, srcf, dstf);
+		return 2;
+	}
+
+	// TODO check filename with "buf" if it is present now
+	sprintf(dstf, "%s.last", srcf);
+	// very very very rare case, closed by other thread?
+	close(s->on_disk_fd);
+	s->on_disk_fd = -1;
+
+	// unlink even not exist
+	remove(dstf);
+	rename(srcf, dstf);
+
+	if (cfg.verbose > 0) {
+		fprintf(stderr,
+			"[INFO] File Size Exceed: TS %d/%d session %d/%d ip %08x %x %x %x %x %s %s %s\n",
+			gstats.ticks, s->start_ticks, s->threadidx, s->slot_idx, s->ip, s->rough_file_offset,
+			s->network_bytes, s->disk_bytes, cfg.max_file_size, fname, srcf, dstf);
+	}
+
+	s->rough_file_offset = 0;
+	// will not open new file, until session_set_on_disk_log_filename
+	return 0;
 }
 
 int disk_write_thread(void *data) {
@@ -975,7 +1034,6 @@ int disk_write_thread(void *data) {
 				if(s->on_disk_fd >= 0 && (s->file_seq != gstats.cur_seq)) {
 					close(s->on_disk_fd);
 					s->on_disk_fd = -1;
-					// reopen with another seq name when buffer full
 				}
 
 
@@ -1090,7 +1148,11 @@ int disk_write_thread(void *data) {
 					continue;
 				}
 
+
 				assert(s->threadidx == thread_idx);
+				// check if the still-open file size exceed, if so, rename the old
+				handle_filesize_exceeded(s);
+
 
 				// check if need to write new file
 				// gstats.cur_seq update in every second
@@ -1564,7 +1626,7 @@ int main(int argc, char *argv[]) {
 	cfg.disk_thread_delay_scan_ms = 0;
 	cfg.force_disconnect_seconds = 0;
 
-	while ((opt = getopt(argc, argv, "vp:a:n:m:l:d:qt:k:h")) != -1) {
+	while ((opt = getopt(argc, argv, "vp:a:n:m:l:d:qt:k:s:h")) != -1) {
 		switch (opt) {
 		case 'v':
 			cfg.verbose++;
@@ -1604,6 +1666,9 @@ int main(int argc, char *argv[]) {
 			break;
 		case 'k':
 			cfg.force_disconnect_seconds = atoi(optarg);
+			break;
+		case 's':
+			cfg.max_file_size = atoi(optarg) * (1UL << 30);
 			break;
 		case 'h':
 		default:
@@ -1696,8 +1761,8 @@ int main(int argc, char *argv[]) {
 		pthread_setname_np(tid, pname);
 	}
 
-	fprintf(stderr, "[INFO] %s start with %d worker threads\n", cfg.prog,
-			cfg.nWorkers);
+	fprintf(stderr, "[INFO] %s start with %d worker threads, %d directories, max file size %d GiB\n",
+			cfg.prog, cfg.nWorkers, cfg.nr_dir, cfg.max_file_size / (1UL << 30));
 
 	if (0 > pthread_create(&tid, NULL, disk_write_thread, NULL)) {
 		perror("could not create IO thread");

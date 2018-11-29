@@ -118,7 +118,7 @@ struct {
 	int pid; /* our own pid              */
 	char log_idf[32];
 	char *prog;
-} cfg = { .nWorkers = 1, .nr_dir = 1, .max_file_size = 1UL * (2UL^30),
+} cfg = { .nWorkers = 1, .nr_dir = 1, .max_file_size = 1UL * (1UL << 30),
 		.addr = INADDR_ANY, /* by default, listen on all local IP's   */
 		.fd = -1, .signal_fd = -1, .epoll_fd = { -1, }, .dir_switch_period = 600};
 

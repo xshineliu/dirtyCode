@@ -361,6 +361,8 @@ int decode_dmi_dimm() {
 	// /sys/firmware/dmi/entries/17-
 	// DMI_ENTRY_DIR
 
+	memset(dimm_info_data, 0, MAX_DIMM_SLOT * sizeof(struct dimm_info));
+
 	DIR* dir;
 	dir = opendir(DMI_ENTRY_DIR);
 	if(dir == NULL) {
@@ -408,6 +410,13 @@ int decode_dmi_dimm() {
 			// WARN TODO
 			continue;
 		}
+
+		// buggy bios may have flash chip in dmidecode, fuck XXX
+		if(size_mibyte > 0 && size_mibyte < 1024) {
+			// WARN TODO
+			continue;
+		}
+
 		dimm_info_data[seq - 1].seq = seq;
 		dimm_info_data[seq - 1].topo = -1;
 		dimm_info_data[seq - 1].sz_gb = size_mibyte / 1024;
@@ -432,10 +441,10 @@ int decode_dmi_dimm() {
 		} else {
 			dimm_info_data[seq - 1].sn[0] = '\0';
 		}
-		printf("%s:\t%3d %3d / %2d / %d %d %d %d / %d / %s / %s / %s / %s\n", dmi_dimm_entry_name, n, n_entry_len,
-				seq, dloc_seq, bloc_seq, sn_seq, pn_seq, size_mibyte,
-				dimm_info_data[seq - 1].dloc, dimm_info_data[seq - 1].bloc,
-				dimm_info_data[seq - 1].pn, dimm_info_data[seq - 1].sn );
+		//printf("%s:\t%3d %3d / %2d / %d %d %d %d / %d / %s / %s / %s / %s\n", dmi_dimm_entry_name, n, n_entry_len,
+		//		seq, dloc_seq, bloc_seq, sn_seq, pn_seq, size_mibyte,
+		//		dimm_info_data[seq - 1].dloc, dimm_info_data[seq - 1].bloc,
+		//		dimm_info_data[seq - 1].pn, dimm_info_data[seq - 1].sn );
 
 	}
 	closedir(dir);
@@ -512,7 +521,17 @@ int main(int argc, char* argv[]) {
 	board_info();
 	printf("%s / %s / %02X_%02X / %d\n", bvname, pname, family, model, core_per_pkg);
 	core();
+
 	decode_dmi_dimm();
+
+	int i = 0;
+	for(i = 0; i < MAX_DIMM_SLOT; i++) {
+			if(dimm_info_data[i].seq != 0) {
+				printf("%2d - %2d GiB\t/ %s / %s / %s / %s\n", dimm_info_data[i].seq, dimm_info_data[i].sz_gb,
+						dimm_info_data[i].dloc, dimm_info_data[i].bloc,
+						dimm_info_data[i].pn, dimm_info_data[i].sn );
+			}
+	}
 	return 0;
 }
 

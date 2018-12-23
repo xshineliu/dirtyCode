@@ -56,6 +56,8 @@ int core_per_pkg = 0;
 int ht_per_core = -1;
 int nr_lcpu = 0;
 
+int dimm_plugged = 0;
+
 unsigned int family;
 unsigned int model;
 
@@ -215,6 +217,8 @@ int board_info() {
 inline int begin_with(const char* a, const char* sub) {
 	return (a == strstr(a, sub));
 }
+
+
 
 int get_topo(char* csrow_dir_name, int channel) {
 
@@ -389,8 +393,16 @@ int decode_dmi_dimm() {
 			continue;
 		}
 		int n = fread(buf, 1, 1024, fp);
+		fclose(fp);
+
 		int n_entry_len = (int) buf[1];
+
 		int size_mibyte = *(short *) (buf + 0x0C);
+		// size >= 32GB
+		if(size_mibyte == 0x7fff) {
+			size_mibyte = *(int *) (buf + 0x1C);
+		}
+
 		int dloc_seq = buf[0x10];
 		int bloc_seq = buf[0x11];
 		int sn_seq = buf[0x18];
@@ -404,7 +416,6 @@ int decode_dmi_dimm() {
 		//		(bloc_seq == 0 ? "NONE" : get_dmi_entry_str(begin, end, bloc_seq)),
 		//		(pn_seq == 0 ? "NONE" : get_dmi_entry_str(begin, end, pn_seq)),
 		//		(sn_seq == 0 ? "NONE" : get_dmi_entry_str(begin, end, sn_seq)) );
-		fclose(fp);
 
 		if(seq > MAX_DIMM_SLOT) {
 			// WARN TODO
@@ -420,6 +431,11 @@ int decode_dmi_dimm() {
 		dimm_info_data[seq - 1].seq = seq;
 		dimm_info_data[seq - 1].topo = -1;
 		dimm_info_data[seq - 1].sz_gb = size_mibyte / 1024;
+
+		if(size_mibyte >= 1024) {
+			dimm_plugged++;
+		}
+
 		char *tmp_ptr = NULL;
 		if((dloc_seq > 0) && (tmp_ptr = get_dmi_entry_str(begin, end, dloc_seq)) != NULL) {
 			sprintf(dimm_info_data[seq - 1].dloc, "%s", tmp_ptr);
@@ -450,6 +466,297 @@ int decode_dmi_dimm() {
 	closedir(dir);
 }
 
+// EP only, EN and EX not covered, more details need the "displayed name"
+int channels_per_agent(int family, int model, int ncore) {
+	// so far, Intel only, family ignore (06)
+	switch(model) {
+		// E5-2690, 8 Cores, 2.9/3.8GHz/20MB/DDR3 1600, 32nm
+		case (0x2D):
+			return 4;
+
+		// E5-2697 v2, 12 Cores, 2.7/3.5GHz/30MB/DDR3 1866, 20nm
+		case (0x3E):
+			if(ncore > 10) {
+				return 2;
+			}
+			return 4;
+
+		// v3, E5-2650V3 at 10 cores
+		case (0x3F):
+			if(ncore > 8) {
+				return 2;
+			}
+			return 4;
+
+		// v4, E5-2650 v4 at 12 cores
+		case (0x4F):
+			if(ncore > 10) {
+				return 2;
+			}
+			return 4;
+
+		// skylake
+		case (0x55):
+			return 3;
+
+		default:
+			return 4;
+	}
+}
+
+
+int parse_dimm_path_dell(char *loc1, char* loc2, char* server_vendor, char* server_model, int cpu_family, int cpu_model) {
+
+	int cpu = -1;
+	int slot = -1;
+	int ha = -1;
+	int ch = -1;
+	int dimm = -1;
+
+	int dell_slot_idx = -1;
+	int dell_need_fix_unbalance = 0;
+	// snb, ivb, hsw, bdw
+	int dell_slots_per_socket = 4;
+
+	int ch_per_agent = channels_per_agent(cpu_family, cpu_model, core_per_pkg);
+
+	// skylake
+	if(cpu_model == 0x55) {
+		dell_slots_per_socket = 6;
+		if(dimm_plugged == 16) {
+			dell_need_fix_unbalance = 1;
+		}
+	}
+
+	if(begin_with(loc1, "DIMM_A") || begin_with(loc1, "A")) {
+		cpu = 0;
+	}
+
+	if(begin_with(loc1, "DIMM_B") || begin_with(loc1, "B")) {
+		cpu = 1;
+	}
+
+	// parse failed
+	if(cpu < 0) {
+		return -1;
+	}
+
+	if(begin_with(loc1, "DIMM_")) {
+		sscanf(loc1 + 6, "%d", &dell_slot_idx);
+	} else {
+		sscanf(loc1 + 1, "%d", &dell_slot_idx);
+	}
+
+	dell_slot_idx--;
+
+	dimm = dell_slot_idx / dell_slots_per_socket;
+	ha = (dell_slot_idx % dell_slots_per_socket) / ch_per_agent;
+	ch = (dell_slot_idx % dell_slots_per_socket) % ch_per_agent;
+	slot = ha * ch_per_agent + ch;
+
+	// fix the case such as C6420 which uses 16 slots only out of 24
+	// C6420: 8 + 8 slots
+	// R540: 10 + 6 slots
+	if(dell_need_fix_unbalance == 1) {
+		if(strstr(server_model, "R540") != NULL) {
+			if(dell_slot_idx == 8) {
+				ha = 1;
+				ch = 0;
+			}
+			if(dell_slot_idx == 9) {
+				ha = 1;
+				ch = 1;
+			}
+		}
+
+		if(strstr(server_model, "C6420") != NULL) {
+			if(dell_slot_idx == 7) {
+				ha = 1;
+				ch = 0;
+			}
+		}
+
+		slot = ha * ch_per_agent + ch;
+	}
+
+	//printf("*DEBUG* %d-%d-%d-%d / %d-%d-%d\n", cpu, ha, ch, dimm, cpu, slot ,dimm);
+	return ch_per_agent * 65536 + cpu * 4096 + ha * 256 + ch * 16 + dimm;
+
+}
+
+// 2 socket server only
+int parse_dimm_path(char *loc1, char* loc2, char* server_vendor, char* server_model,
+		int cpu_family, int cpu_model) {
+	int done = 0;
+
+	//char cap = '\0';
+	int a = -1;
+	int b = -1;
+	int c = -1;
+	int d = -1;
+
+	int cpu = -1;
+	int slot = -1;
+	int ha = -1;
+	int ch = -1;
+	int dimm = -1;
+
+	int ch_per_agent = channels_per_agent(cpu_family, cpu_model, core_per_pkg);
+
+	// Huawei Server, 2U4, 16 slots
+	// DIMM131 | BRANCH 1 CHANNEL 3 DIMM 1 (10.11.65.14, Tecal XH321 V2, E5-2630v2)
+	// DIMM150 | _Node1_Channel5_Dimm0 (10.25.47.67, XH321 V5, Silver4114)
+
+	if(!done && begin_with(loc1, "DIMM") && begin_with(loc2, "BRANCH ")) {
+		int n = sscanf(loc2, "BRANCH %d CHANNEL %d DIMM %d", &a, &b, &c);
+		//printf("*DEBUG* %d %d %d %d\n", a, b, c);
+		if(n == 3) {
+			done = 1;
+			cpu = a;
+			slot = b;
+			ha = slot / ch_per_agent;
+			ch = slot % ch_per_agent;
+			dimm = c;
+		}
+	}
+
+	if(!done && begin_with(loc1, "DIMM") && begin_with(loc2, "_Node")) {
+		int n = sscanf(loc2, "_Node%d_Channel%d_Dimm%d", &a, &b, &c);
+		//printf("*DEBUG* %d %d %d %d\n", a, b, c, d);
+		if(n == 3) {
+			done = 1;
+			cpu = a;
+			slot = b;
+			ha = slot / ch_per_agent;
+			ch = slot % ch_per_agent;
+			dimm = c;
+		}
+	}
+
+	// SuperMicro (Sugon, Inspur, Powerleader ...) 2U4, 16 slots, Grantly
+	// Powerleader  10.12.56.161
+	// P1-DIMMD2 | P0_Node0_Channel3_Dimm1
+	// P2-DIMMH2 | P1_Node1_Channel3_Dimm1
+
+	if(!done && loc1[0] == 'P' && loc2[0] == 'P'
+			&& (ch_per_agent == 2 || ch_per_agent == 4)) {
+		int n = sscanf(loc2, "P%d_Node%d_Channel%d_Dimm%d", &a, &b, &c, &d);
+		//printf("*DEBUG* %d %d %d %d\n", a, b, c, d);
+		if(n == 4) {
+			done = 1;
+			cpu = a;
+			slot = c;
+			ha = slot / ch_per_agent;
+			ch = slot % ch_per_agent;
+			dimm = d;
+		}
+	}
+
+	// SuperMicro (Sugon, Powerleader ...) 2U4, 24 slots, Purley
+	// Sugon  10.27.57.13
+	// P1-DIMMF1 | P0_Node1_Channel2_Dimm0
+	// P2-DIMMF1 | P1_Node1_Channel2_Dimm0
+
+	if(!done && loc1[0] == 'P' && loc2[0] == 'P' && ch_per_agent == 3) {
+		int n = sscanf(loc2, "P%d_Node%d_Channel%d_Dimm%d", &a, &b, &c, &d);
+		//printf("*DEBUG* %d %d %d %d\n", a, b, c, d);
+		if(n == 4) {
+			done = 1;
+			cpu = a;
+			ha = b;
+			ch = c;
+			slot = ha * ch_per_agent + ch;
+			dimm = d;
+		}
+	}
+
+
+	// Inspur 2U4 Purley (i24) 16 slots,  Inspur 5212M5 Purley 24 slots
+	// CPU0_C5D0 | NODE 2 (10.25.78.103)
+	// CPU0_CH4_DIMM1 | NODE 2 (10.24.30.39)
+
+	if(!done && begin_with(loc2, "NODE")) {
+		int n = sscanf(loc1, "CPU%d_CH%d_DIMM%d", &a, &b, &c);
+		//printf("*DEBUG* %d %d %d %d\n", a, b, c, d);
+		if(n != 3) {
+			n = sscanf(loc1, "CPU%d_C%dD%d", &a, &b, &c);
+			//printf("*DEBUG* %d %d %d %d\n", a, b, c, d);
+		}
+		if(n == 3) {
+			done = 1;
+			cpu = a;
+			slot = b;
+			ha = slot / ch_per_agent;
+			ch = slot % ch_per_agent;
+			dimm = c;
+		}
+	}
+
+	// Inspur 5212M4 (10.3.14.14)
+	// CH{A-H}0 | A1_Node?_Channel?_Dimm?
+
+	if(!done && begin_with(loc1, "CH") && loc2[0] == 'A') {
+		int n = sscanf(loc2, "A1_Node%d_Channel%d_Dimm%d", &a, &b, &c);
+		//printf("*DEBUG* %d %d %d %d\n", a, b, c, d);
+		if(n == 3) {
+			done = 1;
+			cpu = a;
+			slot = b;
+			ha = slot / ch_per_agent;
+			ch = slot % ch_per_agent;
+			dimm = c;
+		}
+	}
+
+	// ??? Sugon I620-G30, 24 slots (10.23.219.74)
+	// Only Grantly or above: CPU0_DIMMD1    | D1_Node0_Channel3_Dimm1
+	// Purley: CPU0_DIMM_E1   | A0_Node1_Channel4_Dimm1
+
+	if(!done && (begin_with(loc1, "CPU0_DIMM_") || begin_with(loc1, "CPU1_DIMM_"))
+			&& loc2[0] == 'A') {
+		int n = sscanf(loc2, "A%d_Node%d_Channel%d_Dimm%d", &a, &b, &c, &d);
+		//printf("*DEBUG* %d %d %d %d\n", a, b, c, d);
+		if(n == 4) {
+			done = 1;
+			cpu = a;
+			slot = c;
+			ha = slot / ch_per_agent;
+			ch = slot % ch_per_agent;
+			dimm = d;
+		}
+	}
+
+
+	// ??? Sugon I620-G20S, 24 slots (10.20.152.130)
+	// Only Grantly or above: CPU0_DIMMD1    | D1_Node0_Channel3_Dimm1
+	// Purley: CPU0_DIMM_E1   | A0_Node1_Channel4_Dimm1
+
+	if(!done && (begin_with(loc1, "CPU0_DIMM") || begin_with(loc1, "CPU1_DIMM"))) {
+		int n = sscanf(loc2 + 1, "%d_Node%d_Channel%d_Dimm%d", &a, &b, &c, &d);
+		//printf("*DEBUG* %c %d %d %d %d\n", loc2[0], a, b, c, d);
+		if(n == 4) {
+			done = 1;
+			cpu = b;
+			slot = c;
+			ha = slot / ch_per_agent;
+			ch = slot % ch_per_agent;
+			dimm = d;
+		}
+	}
+
+	// DELL
+	if(!done && (strstr(server_vendor, "Dell") != NULL)) {
+		return parse_dimm_path_dell(loc1, loc2, server_vendor, server_model, cpu_family, cpu_model);
+	}
+
+	if(!done) {
+		return -1;
+	}
+
+	// printf("*DEBUG* %d-%d-%d-%d / %d-%d-%d\n", cpu, ha, ch, dimm, cpu, slot ,dimm);
+	return ch_per_agent * 65536 + cpu * 4096 + ha * 256 + ch * 16 + dimm;
+
+}
 
 int core() {
 	DIR* dir;
@@ -519,15 +826,22 @@ int main(int argc, char* argv[]) {
 	get_fms();
 	init_cpu_topo();
 	board_info();
-	printf("%s / %s / %02X_%02X / %d\n", bvname, pname, family, model, core_per_pkg);
-	core();
 
+	core();
 	decode_dmi_dimm();
+	printf("%s / %s / %02X_%02X / %d / %d / %d\n", bvname, pname, family, model,
+			core_per_pkg, channels_per_agent(family, model, core_per_pkg), dimm_plugged);
 
 	int i = 0;
 	for(i = 0; i < MAX_DIMM_SLOT; i++) {
 			if(dimm_info_data[i].seq != 0) {
-				printf("%2d - %2d GiB\t/ %s / %s / %s / %s\n", dimm_info_data[i].seq, dimm_info_data[i].sz_gb,
+				int loc = -1;
+				if(dimm_info_data[i].sz_gb > 0) {
+					loc = parse_dimm_path(dimm_info_data[i].dloc, dimm_info_data[i].bloc,
+							bvname, pname, family, model);
+				}
+				printf("%2d - %2d GiB\t/ %08X / %s / %s / %s / %s\n", dimm_info_data[i].seq,
+						dimm_info_data[i].sz_gb, loc,
 						dimm_info_data[i].dloc, dimm_info_data[i].bloc,
 						dimm_info_data[i].pn, dimm_info_data[i].sn );
 			}

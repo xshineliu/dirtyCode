@@ -729,7 +729,7 @@ int parse_dimm_path(char *loc1, char* loc2, char* server_vendor, char* server_mo
 		}
 	}
 
-	// Inspur 5212M4 (10.3.14.14)
+	// Inspur 5212M4 (10.3.14.14), NF5460M4 (10.20.146.224)
 	// CH{A-H}0 | A1_Node?_Channel?_Dimm?
 
 	if(!done && begin_with(loc1, "CH") && loc2[0] == 'A') {
@@ -900,7 +900,7 @@ int main(int argc, char* argv[]) {
 	board_info();
 
 	decode_dmi_dimm();
-	printf("### %s / %s / %02X_%02X / %d / %d / %d\n", bvname, pname, family, model,
+	printf("### %s / %s / %02X_%02X / %d / %d / %d\n\n", bvname, pname, family, model,
 			core_per_pkg, channels_per_agent(family, model, core_per_pkg), dimm_plugged);
 
 	int i = 0;

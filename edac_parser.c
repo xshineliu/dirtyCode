@@ -42,6 +42,7 @@ struct dimm_info{
 	short sz_gb;
 	int topo;
 	int edac_path;
+	int edac_val;
 	char dloc[64];
 	char bloc[64];
 	char pn[64];
@@ -297,7 +298,7 @@ int get_topo(char* csrow_dir_name, int channel) {
 				} else {
 					dimm_info_data[i].edac_path = -1;
 				}
-				printf("%2d %s %04X\t%s\t%d GiB\t%d-%d-%d-%d\t%d\n", i, channel_dimm_label_name,
+				printf("%2d %s %04X\t%s\t%d GiB\t%d-%d-%d-%d\t%d\n", i + 1, channel_dimm_label_name,
 						dimm_info_data[i].edac_path, dimm_info_data[i].dloc, dimm_info_data[i].sz_gb, a, b, c, d, val);
 				break;
 			}
@@ -485,6 +486,7 @@ int decode_dmi_dimm() {
 
 		dimm_info_data[seq - 1].topo = -1;
 		dimm_info_data[seq - 1].edac_path = -1;
+		dimm_info_data[seq - 1].edac_val = -2;
 
 		//printf("%s:\t%3d %3d / %2d / %d %d %d %d / %d / %s / %s / %s / %s\n", dmi_dimm_entry_name, n, n_entry_len,
 		//		seq, dloc_seq, bloc_seq, sn_seq, pn_seq, size_mibyte,
@@ -858,6 +860,40 @@ int edac_sysfs_decode() {
 	return 0;
 }
 
+void get_edac_val() {
+	char path[256];
+	int i = 0;
+	for(i = 0; i < nr_dimm_slots; i++) {
+		//assert(dimm_info_data[i].seq != 0)
+		if(dimm_info_data[i].edac_path < 0) {
+			;
+			continue;
+		}
+		int val = -1;
+
+		int p1 = (dimm_info_data[i].edac_path & 0x00000F00) / 256;
+		int p2 = (dimm_info_data[i].edac_path & 0x000000F0) / 16;
+		int p3 = (dimm_info_data[i].edac_path & 0x0000000F);
+		sprintf(path, "/sys/devices/system/edac/mc/mc%d/csrow%d/ch%d_ce_count", p1, p2, p3);
+
+		FILE *fp = fopen(path, "r");
+		if(fp == NULL) {
+			fclose(fp);
+			continue;
+		}
+
+		fscanf(fp, "%d", &val);
+		fclose(fp);
+
+		dimm_info_data[i].edac_val = val;
+
+		printf("%2d - %2d GiB\t/ %08X / %s / %s / %s / %s / %s / %d\n", dimm_info_data[i].seq,
+			dimm_info_data[i].sz_gb, dimm_info_data[i].topo, dimm_info_data[i].dloc,
+			dimm_info_data[i].bloc, dimm_info_data[i].pn, dimm_info_data[i].sn, path,
+			dimm_info_data[i].edac_val);
+	}
+}
+
 int main(int argc, char* argv[]) {
 	get_fms();
 	init_cpu_topo();
@@ -869,30 +905,34 @@ int main(int argc, char* argv[]) {
 
 	int i = 0;
 	for(i = 0; i < MAX_DIMM_SLOT; i++) {
-			if(dimm_info_data[i].seq != 0) {
-				int loc = -1;
-				if(dimm_info_data[i].sz_gb > 0) {
-					loc = parse_dimm_path(dimm_info_data[i].dloc, dimm_info_data[i].bloc,
-							bvname, pname, family, model);
-				}
-				dimm_info_data[i].topo = loc;
-				//printf("%2d - %2d GiB\t/ %08X / %s / %s / %s / %s\n", dimm_info_data[i].seq,
-				//		dimm_info_data[i].sz_gb, dimm_info_data[i].topo,
-				//		dimm_info_data[i].dloc, dimm_info_data[i].bloc,
-				//		dimm_info_data[i].pn, dimm_info_data[i].sn );
+		if(dimm_info_data[i].seq != 0) {
+			int loc = -1;
+			if(dimm_info_data[i].sz_gb > 0) {
+				loc = parse_dimm_path(dimm_info_data[i].dloc, dimm_info_data[i].bloc,
+						bvname, pname, family, model);
 			}
+			dimm_info_data[i].topo = loc;
+			//printf("%2d - %2d GiB\t/ %08X / %s / %s / %s / %s\n", dimm_info_data[i].seq,
+			//		dimm_info_data[i].sz_gb, dimm_info_data[i].topo,
+			//		dimm_info_data[i].dloc, dimm_info_data[i].bloc,
+			//		dimm_info_data[i].pn, dimm_info_data[i].sn );
+		}
 	}
 
 	edac_sysfs_decode();
 
 
 	for(i = 0; i < nr_dimm_slots; i++) {
-			//assert(dimm_info_data[i].seq != 0)
-			printf("%2d - %2d GiB\t/ %08X / %s / %s / %s / %s / %04hX\n", dimm_info_data[i].seq,
-					dimm_info_data[i].sz_gb, dimm_info_data[i].topo, dimm_info_data[i].dloc,
-					dimm_info_data[i].bloc, dimm_info_data[i].pn, dimm_info_data[i].sn,
-					(unsigned short)dimm_info_data[i].edac_path);
+		//assert(dimm_info_data[i].seq != 0)
+		printf("%2d - %2d GiB\t/ %08X / %s / %s / %s / %s / %04hX\n", dimm_info_data[i].seq,
+			dimm_info_data[i].sz_gb, dimm_info_data[i].topo, dimm_info_data[i].dloc,
+			dimm_info_data[i].bloc, dimm_info_data[i].pn, dimm_info_data[i].sn,
+			(unsigned short)dimm_info_data[i].edac_path);
 	}
+
+
+	get_edac_val();
+
 	return 0;
 }
 

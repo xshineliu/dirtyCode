@@ -222,7 +222,6 @@ inline int begin_with(const char* a, const char* sub) {
 }
 
 
-
 int get_topo(char* csrow_dir_name, int channel) {
 
 	char channel_dimm_label_name[256];
@@ -298,8 +297,8 @@ int get_topo(char* csrow_dir_name, int channel) {
 				} else {
 					dimm_info_data[i].edac_path = -1;
 				}
-				printf("%2d %s %04X\t%s\t%d GiB\t%d-%d-%d-%d\t%d\n", i + 1, channel_dimm_label_name,
-						dimm_info_data[i].edac_path, dimm_info_data[i].dloc, dimm_info_data[i].sz_gb, a, b, c, d, val);
+				//printf("%2d %s %04X\t%s\t%d GiB\t%d-%d-%d-%d\t%d\n", i + 1, channel_dimm_label_name,
+				//		dimm_info_data[i].edac_path, dimm_info_data[i].dloc, dimm_info_data[i].sz_gb, a, b, c, d, val);
 				break;
 			}
 	}
@@ -796,6 +795,7 @@ int parse_dimm_path(char *loc1, char* loc2, char* server_vendor, char* server_mo
 
 }
 
+// should called when edac driver load or unload, may scheduled periodicaly
 int edac_sysfs_decode() {
 	DIR* dir;
 	dir = opendir(EDAC_MC_DIR);
@@ -900,7 +900,7 @@ int main(int argc, char* argv[]) {
 	board_info();
 
 	decode_dmi_dimm();
-	printf("%s / %s / %02X_%02X / %d / %d / %d\n", bvname, pname, family, model,
+	printf("### %s / %s / %02X_%02X / %d / %d / %d\n", bvname, pname, family, model,
 			core_per_pkg, channels_per_agent(family, model, core_per_pkg), dimm_plugged);
 
 	int i = 0;
@@ -922,6 +922,7 @@ int main(int argc, char* argv[]) {
 	edac_sysfs_decode();
 
 
+
 	for(i = 0; i < nr_dimm_slots; i++) {
 		//assert(dimm_info_data[i].seq != 0)
 		printf("%2d - %2d GiB\t/ %08X / %s / %s / %s / %s / %04hX\n", dimm_info_data[i].seq,
@@ -930,6 +931,7 @@ int main(int argc, char* argv[]) {
 			(unsigned short)dimm_info_data[i].edac_path);
 	}
 
+	printf("\n");
 
 	get_edac_val();
 

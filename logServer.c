@@ -33,7 +33,13 @@
 #define EXIT_DELAY 1
 #define NET_READ_BUF (4 * 1024) // 4 KiB
 #define NET_READ_BUF_MAX (32 * 1024) // 32 KiB
+
+#ifndef NO_DISK_WRITE
 #define DEFAULT_DATA_BLOCK_SIZE (64 * 1024) // 64 KiB
+#else
+#define DEFAULT_DATA_BLOCK_SIZE 64 // 64 bytes
+#endif
+
 #define STEP_DATA_BLOCK_SIZE (8 * 1024) // 8 KiB
 #define MAX_DATA_BLOCK_SIZE (128 * 1024) // 128 KiB
 #define EXT_DATA_BLOCK_SIZE (32 * 1024 * 1024) // 32 MiB
@@ -198,6 +204,71 @@ int get_month_seq(int *val){
 #endif
 
 
+// dirty code, FIXME TODO
+#ifdef UDP_FORWARD_RT
+#define UDP_SERVER_IP "127.0.0.1"
+#define UDP_SERVER_PORT 50000
+time_t udp_conn_last_try_tick[NR_MAX_THREADS] = {0,};
+int udp_conn_sfd[NR_MAX_THREADS] = {0,};
+struct sockaddr_in udp_srv_sock[NR_MAX_THREADS];
+int connect_udp_peer(int thread_idx) {
+	struct sockaddr_in *udp_sock = NULL;
+	int sockfd = 0;
+	time_t last_try_tick = 0;
+	time_t this_try_tick = 0;
+	int ret = 0;
+	// in case fd still open
+	if(udp_conn_sfd[thread_idx] > 0) {
+		close(udp_conn_sfd[thread_idx]);
+	}
+	// check if the peace period expire
+	last_try_tick = udp_conn_last_try_tick[thread_idx];
+	time(&this_try_tick);
+	if(this_try_tick < last_try_tick + 10) {
+		return 1;
+	}
+	udp_conn_last_try_tick[thread_idx] = this_try_tick;
+	udp_sock = udp_srv_sock + thread_idx;
+	memset(udp_sock, 0, sizeof(struct sockaddr_in));
+    if ( (sockfd = socket(AF_INET, SOCK_DGRAM, 0)) < 0 ) {
+        perror("socket creation failed");
+        udp_conn_sfd[thread_idx] = -1;
+        //exit(EXIT_FAILURE);
+        return 1;
+    }
+    udp_conn_sfd[thread_idx] = sockfd;
+    udp_sock->sin_family = AF_INET;
+    // reuse, == tcp port
+    udp_sock->sin_port = htons(cfg.port);
+    ret = inet_pton(AF_INET, UDP_SERVER_IP, &(udp_sock->sin_addr));
+	//fprintf(stderr, "inet_pton ret code %d\n", ret);
+    return 0;
+}
+int send_to_udp_peer(struct session *s, const char *msg, int len) {
+	struct sockaddr_in *udp_sock = NULL;
+	int thread_idx = s->threadidx;
+	int sockfd = udp_conn_sfd[thread_idx];
+	int ret;
+	if( sockfd < 1 ) {
+		if(connect_udp_peer(thread_idx) != 0 ) {
+			// connnect not succesful
+			//fprintf(stderr, "CONN FAIL\n");
+			return 1;
+		}
+	}
+	// at this point, valid
+	udp_sock = udp_srv_sock + thread_idx;
+	sockfd = udp_conn_sfd[thread_idx];
+	ret = sendto(sockfd, msg, len, 0,
+			(const struct sockaddr *) udp_sock, sizeof(struct sockaddr_in));
+	// msg[len] = '\0';
+	//fprintf(stderr, "CONN SUCC SEND to thread %d fd %d with %d: %s\n",
+	//		thread_idx, sockfd, ret, msg);
+	return 0;
+}
+#endif
+
+
 /* should call with lock locked per thread */
 int get_free_conn_slot(int thread_idx) {
 	int i = 0;
@@ -252,11 +323,16 @@ int session_set_on_disk_log_filename(struct session *s) {
 	sprintf(fileName, MONTHLY_DIR_PREFIX, p[0] % cfg.nr_dir + 1,
 			cfg.log_idf, date_str1, ip_str1, ip_str2);
 #else
+#ifdef FIX_LOG_NAME
+	sprintf(fileName, "/var/run/%s/%s/%s.log", cfg.log_idf, ip_str1, ip_str2);
+#else
+	// the default case
 	strftime(date_str1, 9, "%Y%m%d", &(gstats.cur_tminfo));
 	//strftime(date_str2, 13, "%Y%m%d%H%M", &(gstats.cur_tm));
 	sprintf(fileName, DEFAULT_DIR_PREFIX, p[0] % cfg.nr_dir + 1,
 			cfg.log_idf, date_str1, (86400 / cfg.dir_switch_period),
 			gstats.cur_seq, ip_str1, ip_str2);
+#endif
 #endif
 
 
@@ -326,6 +402,8 @@ struct session* get_new_session(int ip, int events, int socket_fd, int tid) {
 
 	s->flush_duration = FLUSH_DURATION_DEFAULT + ip % FLUSH_DURATION_VARIABLE;
 	s->start_ticks = gstats.ticks;
+	// intent for under timeout to del the session even no data received
+	s->last_disk_io_write_tick = gstats.ticks;
 	s->file_seq = gstats.cur_seq;
 
 #ifdef DIR_SWITCH_MONTHLY
@@ -526,6 +604,7 @@ int del_session(struct session* s, int immediately) {
 
 		}
 
+		s->in_delete_stage = 20;
 		// remain will be free and close in io thread
 		return 0;
 	}
@@ -899,6 +978,11 @@ int write2disk(struct session *s) {
 				"with buf ptr %p and len %d\n", __func__, buf, towrite);
 	}
 
+#ifdef FIX_LOG_FILE
+	ftruncate(s->on_disk_fd, 0);
+	lseek(s->on_disk_fd, 0, SEEK_SET);
+#endif
+	
 	while (ntries > 0 && nleft > 0) {
 		rc = write(s->on_disk_fd, buf, nleft);
 		if (rc < -1) {
@@ -1013,6 +1097,13 @@ int disk_write_thread(void *data) {
 			for (slot_idx = 0; slot_idx < MAX_CONN_PER_THREAD; slot_idx++) {
 				s = sptr[slot_idx];
 				if (!s) {
+					continue;
+				}
+
+				// this is DANGER, ASSUME delete is safe, just ASSUME ONLY, may crash the APP
+				if(cfg.force_disconnect_seconds > 0 &&
+						(s->last_disk_io_write_tick + cfg.force_disconnect_seconds) < gstats.ticks) {
+					del_session(s, 1);
 					continue;
 				}
 
@@ -1335,6 +1426,144 @@ int enlarge_session_buf(struct session *s, int gap) {
 
 }
 
+
+
+#ifdef FIX_LOG_NAME
+
+// fixed assume a record starts with "top", and end with 3x '\n'
+
+// s->lock maybe hold by
+// assume "top" never in the middle
+int pass2write(struct session *s, void *buf, int len) {
+	void* dist_buf = NULL;
+
+	const char *leading_idf = "top";
+	int leading_idf_len = strlen(leading_idf);
+
+	if (!s || !buf || len < 3) {
+		return -1;
+	}
+
+	if (cfg.verbose > 3) {
+		char tmp[64];
+		snprintf(tmp, 63, "%s\n", (char *)buf);
+		fprintf(stderr, "[DEBUG] \t\tthread %d got a message with len %d: *** %s\n",
+				s->threadidx, len, tmp);
+	}
+
+	int msg_has_end_flag = 0;
+	if(((char *)buf)[len - 1] == '\n' && ((char *)buf)[len - 2] == '\n' && ((char *)buf)[len - 3] == '\n') {
+		msg_has_end_flag = 1;
+		if (cfg.verbose > 3) {
+			fprintf(stderr, "[DEBUG] \t\tthread %d got a message has the end with len %d\n",
+					s->threadidx, len);
+		}
+	}
+
+	int msg_has_start_flag = 0;
+	if(strncmp((char *)buf, leading_idf, leading_idf_len) == 0) {
+		msg_has_start_flag = 1;
+		if (cfg.verbose > 3) {
+			fprintf(stderr, "[DEBUG] \t\tthread %d got a new message with len %d\n",
+					s->threadidx, len);
+		}
+	}
+
+	// START_INV + END_OK
+	// msg has end, but neither s->cur_buf nor buf started with "top", fix and discard
+	if(msg_has_end_flag) {
+		if(strncmp((char *)(s->cur_buf), leading_idf, leading_idf_len) != 0 && !msg_has_start_flag) {
+			// fix
+			s->membuf_offset = 0;
+			((char *)(s->cur_buf))[0] = '\0';
+			// skip broken msg
+			if (cfg.verbose > 3) {
+				fprintf(stderr, "[DEBUG] \t\tthread %d discard len %d (%d)\n", s->threadidx, len, __LINE__);
+			}
+			return -1;
+		}
+	}
+
+	// a new message arrive, but current buf not empty, fix and discard
+	if(msg_has_start_flag && s->membuf_offset != 0) {
+		// fix
+		s->membuf_offset = 0;
+		((char *)(s->cur_buf))[0] = '\0';
+		// discard last incomplete buf
+		// fall to the next copy step
+	}
+
+	// ANY_CASE_START + NO_END
+	// append msg if room enough, else disacard this section and previous data
+	if(!msg_has_end_flag) {
+
+		// if room is not enough, discard all
+		if(s->membuf_offset + len > s->mem_buf_len) {
+			// skip broken msg and fix
+
+			if (cfg.verbose > 3) {
+				fprintf(stderr, "[DEBUG] \t\tthread %d discard len %d, o=%d, t=%d (%d)\n",
+						s->threadidx, len, s->membuf_offset, s->mem_buf_len, __LINE__);
+			}
+
+			s->membuf_offset = 0;
+			((char *)(s->cur_buf))[0] = '\0';
+
+			return -1;
+		}
+
+		// room is enough, do append
+		dist_buf = s->cur_buf + s->membuf_offset;
+		memcpy(dist_buf, buf, len);
+		s->membuf_offset += len;
+		if (cfg.verbose > 3) {
+			fprintf(stderr, "[DEBUG] \t\tthread %d add len %d (%d)\n", s->threadidx, len, __LINE__);
+		}
+		return 0;
+	}
+
+	// START_OK + END_OK
+	// msg_has_end_flag true, do flush
+	dist_buf = s->cur_buf + s->membuf_offset;
+	int new_len = len;
+	// truncate msg if size exceed
+	if(s->membuf_offset + new_len > s->mem_buf_len) {
+		new_len = s->mem_buf_len - s->membuf_offset;
+	}
+	memcpy(dist_buf, buf, new_len);
+	s->membuf_offset += new_len;
+	LOCK(s->disk_io_ops_lock);
+	if (s->disk_io_in_progress) {
+		UNLOCK(s->disk_io_ops_lock);
+		// discard this record
+		s->membuf_offset = 0;
+		((char *)(s->cur_buf))[0] = '\0';
+		if (cfg.verbose > 3) {
+			fprintf(stderr, "[DEBUG] \t\tthread %d discard len %d (%d)\n", s->threadidx, len, __LINE__);
+		}
+		return -2;
+	}
+	if (s->cur_buf == s->buf1) {
+		s->cur_buf = s->buf2;
+		s->disk_buf = s->buf1;
+	} else {
+		s->cur_buf = s->buf1;
+		s->disk_buf = s->buf2;
+	}
+	s->disk_write_buf_len = s->membuf_offset;
+	// reset offset to zero
+	s->membuf_offset = 0;
+	((char *)(s->cur_buf))[0] = '\0';
+	UNLOCK(s->disk_io_ops_lock);
+	if (cfg.verbose > 3) {
+		fprintf(stderr, "[DEBUG] \t\tthread %d dirty buf %p len: %d\n",
+				s->threadidx, s->disk_buf, s->disk_write_buf_len);
+	}
+	return 0;
+}
+
+#else
+
 // s->lock maybe hold by
 
 int pass2write(struct session *s, void *buf, int len) {
@@ -1461,11 +1690,23 @@ setup_copy:
 	}
 	return 0;
 }
+#endif
+
 
 void drain_client(struct session *s) {
 	int rc, readOK = 0;
+	int buf_max_len = s->net_read_buf_len;
+
+#ifndef UDP_FORWARD_RT
 	// GNU extention calloc
-	char buf[s->net_read_buf_len];
+	char buf[buf_max_len];
+#else
+	int ipv4_raw_len = 9;
+	// GNU extention calloc
+	char rawbuf[buf_max_len + ipv4_raw_len];
+	char *buf = rawbuf + ipv4_raw_len;
+#endif
+
 
 	int sfd = s->socket_fd;
 	int thread_idx = s->threadidx;
@@ -1486,28 +1727,39 @@ void drain_client(struct session *s) {
 		return;
 	}
 
-	rc = read(sfd, buf, sizeof(buf));
+	// WARN maybe not align
+	rc = read(sfd, buf, buf_max_len);
 	switch (rc) {
 	default:
 		if (cfg.verbose > 3) {
-			fprintf(stderr, "[DEBUG] \tthread %d received %d bytes\n",
-					thread_idx, rc);
+			fprintf(stderr, "[DEBUG] \tthread %d received %d bytes\n", thread_idx, rc);
 		}
 		readOK = 1;
 		s->network_bytes += rc;
 		gstats.net_in_bytes[thread_idx] += rc;
+
+#ifdef UDP_FORWARD_RT
+		sprintf(rawbuf, "%08x", s->ip);
+		rawbuf[ipv4_raw_len - 1] = ' ';
+		send_to_udp_peer(s, (const char*)rawbuf, rc + ipv4_raw_len);
+#endif
+
+#ifndef NO_DISK_WRITE
 		pass2write(s, (void *) buf, rc);
+#endif
+
 		break;
+
 	case 0:
 		if (cfg.verbose > 0) {
 			fprintf(stderr, "[INFO] thread %d fd %d closed\n", thread_idx, sfd);
 		}
 		// !readOK: close the resource
 		break;
+
 	case -1:
 		if (cfg.verbose > 2) {
-			fprintf(stderr, "[DEBUG] thread %d recv: %s\n", thread_idx,
-					strerror(errno));
+			fprintf(stderr, "[DEBUG] thread %d recv: %s\n", thread_idx, strerror(errno));
 		}
 		if (errno == ECONNRESET) {
 			// !readOK: close
@@ -1515,10 +1767,12 @@ void drain_client(struct session *s) {
 		}
 		// set readOK to 1 in order to retry, such as EINTR
 		readOK = 1;
+		break;
 	}
 
-	if (readOK)
+	if (readOK) {
 		return;
+	}
 
 	/* client closed. log it, tell epoll to forget it, close it */
 	free_session_step1(s);
@@ -1666,6 +1920,7 @@ int main(int argc, char *argv[]) {
 			break;
 		case 'k':
 			cfg.force_disconnect_seconds = atoi(optarg);
+			fprintf(stderr, "*** Use force disconnect is danger in current implementation, may lead program crash.\n");
 			break;
 		case 's':
 			cfg.max_file_size = atoi(optarg) * (1UL << 30);
@@ -1676,10 +1931,14 @@ int main(int argc, char *argv[]) {
 			break;
 		}
 	}
-	if (cfg.addr == INADDR_NONE)
+
+	if (cfg.addr == INADDR_NONE) {
 		usage();
-	if (cfg.port == 0)
+	}
+
+	if (cfg.port < 1 || cfg.port > 65535) {
 		usage();
+	}
 
 	if(!cfg.log_idf[0]) {
 		strncpy(cfg.log_idf, LOG_DIR, 31);
@@ -1690,10 +1949,6 @@ int main(int argc, char *argv[]) {
 		cfg.force_disconnect_seconds = 0;
 	}
 
-	// at least need 10 min of force_disconnect_seconds
-	if(cfg.force_disconnect_seconds > 0 && cfg.force_disconnect_seconds < 600) {
-		cfg.force_disconnect_seconds = 600;
-	}
 
 #ifdef DIR_SWITCH_MONTHLY
 	cfg.dir_switch_period = 86400;
@@ -1857,5 +2112,4 @@ int main(int argc, char *argv[]) {
 	}
 
 	return 0;
-
 }

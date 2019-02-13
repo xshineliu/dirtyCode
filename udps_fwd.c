@@ -1,8 +1,3 @@
-/* 
- * udpserver.c - A simple UDP forward app 
- * usage: udpserver <port>
- */
-
 #include <stdio.h>
 #include <unistd.h>
 #include <stdlib.h>
@@ -25,6 +20,41 @@
 time_t udp_conn_last_try_tick[NR_MAX_THREADS] = {0,};
 int udp_conn_sfd[NR_MAX_THREADS] = {0,};
 struct sockaddr_in udp_srv_sock[NR_MAX_THREADS];
+char text_ip[NR_MAX_THREADS][128];
+unsigned short remote_port[NR_MAX_THREADS];
+
+/* addr str len 128 */
+int lookup_host(const char *host, char *text_ip) {
+	struct addrinfo hints, *res;
+	int errcode;
+	void *ptr;
+	memset(&hints, 0, sizeof(hints));
+	hints.ai_family = PF_UNSPEC;
+	hints.ai_socktype = SOCK_STREAM;
+	hints.ai_flags |= AI_CANONNAME;
+	errcode = getaddrinfo(host, NULL, &hints, &res);
+	if (errcode != 0) {
+		perror("getaddrinfo");
+		return -1;
+	}
+	while (res) {
+		inet_ntop(res->ai_family, res->ai_addr->sa_data, text_ip, 100);
+		switch (res->ai_family) {
+		case AF_INET:
+			ptr = &((struct sockaddr_in *) res->ai_addr)->sin_addr;
+			break;
+		case AF_INET6:
+			ptr = &((struct sockaddr_in6 *) res->ai_addr)->sin6_addr;
+			break;
+		}
+		inet_ntop(res->ai_family, ptr, text_ip, 128);
+		//printf("IPv%d address: %s (%s)\n", res->ai_family == PF_INET6 ? 6 : 4,
+		//		text_ip, res->ai_canonname);
+		res = res->ai_next;
+	}
+	return 0;
+}
+
 
 int connect_udp_peer(int thread_idx) {
 	struct sockaddr_in *udp_sock = NULL;
@@ -41,9 +71,9 @@ int connect_udp_peer(int thread_idx) {
 	// check if the peace period expire
 	last_try_tick = udp_conn_last_try_tick[thread_idx];
 	time(&this_try_tick);
-	if(this_try_tick < last_try_tick + 10) {
-		return 1;
-	}
+	//if(this_try_tick < last_try_tick + 10) {
+	//	return 1;
+	//}
 	udp_conn_last_try_tick[thread_idx] = this_try_tick;
 
 
@@ -59,8 +89,8 @@ int connect_udp_peer(int thread_idx) {
     udp_conn_sfd[thread_idx] = sockfd;
 
     udp_sock->sin_family = AF_INET;
-    udp_sock->sin_port = htons(UDP_SERVER_PORT);
-    ret = inet_pton(AF_INET, UDP_SERVER_IP, &(udp_sock->sin_addr));
+    udp_sock->sin_port = htons(remote_port[thread_idx]);
+    ret = inet_pton(AF_INET, text_ip[thread_idx], &(udp_sock->sin_addr));
 	//fprintf(stderr, "inet_pton ret code %d\n", ret);
 
     return 0;
@@ -88,7 +118,8 @@ int send_to_udp_peer(int thread_idx, const char *msg, int len) {
 	return 0;
 }
 
-int split_and_send(char *msg, int len) {
+int split_and_send(int n_channel, char *msg, int len) {
+	int i = 0;
 	int n = 0;
 	int single_msg_len = 0;
 
@@ -136,9 +167,11 @@ int split_and_send(char *msg, int len) {
 
 		single_msg_len = snprintf(buf, MAX_LINE_LEN - 1, "%d.%d.%d.%d %s\n", ipb[3] & 0xFF, ipb[2] & 0xFF, ipb[1] & 0xFF, ipb[0] & 0xFF, p1);
 		//printf("Prepare to Send %s", buf);
-		send_to_udp_peer(0, buf, single_msg_len);
-		n++;
+		for ( i = 0; i < n_channel; i++) {
+			send_to_udp_peer(i, buf, single_msg_len);
+		}
 
+		n++;
 		p2++;
 		p1 = p2;
 	}
@@ -169,15 +202,27 @@ int main(int argc, char **argv)
 	char *hostaddrp;	/* dotted decimal host addr string */
 	int optval;		/* flag value for setsockopt */
 	int n;			/* message byte size */
+	int i = 0;
+	int n_end = 0;
+	int ret = 0;
 
 	/* 
 	 * check command line arguments 
 	 */
-	if (argc != 2) {
-		fprintf(stderr, "usage: %s <port>\n", argv[0]);
+	if (argc < 4 && (argc % 2 != 0)) {
+		fprintf(stderr, "usage: %s <port> <remote name> <remote port> [<remote name> <remote port>] \n", argv[0]);
 		exit(1);
 	}
+
 	portno = atoi(argv[1]);
+	n = 2;
+	while( n < argc ) {
+		lookup_host(argv[n], text_ip[n_end]);
+		remote_port[n_end] = atoi(argv[n + 1]);
+		printf("Remote %2d: %s %d Added\n", n_end, text_ip[n_end], remote_port[n_end]);
+		n += 2;
+		n_end++;
+	}
 
 	/* 
 	 * socket: create the parent socket 
@@ -224,7 +269,7 @@ int main(int argc, char **argv)
 		/*
 		 * recvfrom: receive a UDP datagram from a client
 		 */
-		buf = malloc(BUFSIZE);
+		char buf[BUFSIZE] = {0,};
 		n = recvfrom(sockfd, buf, BUFSIZE, 0,
 			     (struct sockaddr *)&clientaddr, &clientlen);
 		if (n < 0)
@@ -245,8 +290,7 @@ int main(int argc, char **argv)
 		//printf("server received %d bytes from %s\n", n, buf); 
 		//printf("server received %d bytes\n", n); 
 
-
-		split_and_send(buf, n);
+		split_and_send(n_end, buf, n);
 
 		/* 
 		 * sendto: echo the input back to the client 

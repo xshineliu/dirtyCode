@@ -118,6 +118,7 @@ int send_to_udp_peer(int thread_idx, const char *msg, int len) {
 	return 0;
 }
 
+#ifdef MULTI_SPLIT
 int split_and_send(int n_channel, char *msg, int len) {
 	int i = 0;
 	int n = 0;
@@ -181,6 +182,40 @@ int split_and_send(int n_channel, char *msg, int len) {
 	return n;
 }
 
+#else
+
+int split_and_send(int n_channel, char *msg, int len) {
+	int i;
+	char buf[MAX_LINE_LEN];
+	//printf("Prepare to Send %s", buf);
+#ifdef ADD_IPV4_TAG
+	msg[8] = '\0';
+	int ip = 0;
+	ip = strtol(msg, NULL, 16);
+	//printf("Debug %d %d %x\n", len, msg[8], ip);
+
+	if(ip == 0) {
+		return 0;
+	}
+
+	char *p1 = msg + 9;
+	char *ipb = (char *) & ip;
+	int single_msg_len = snprintf(buf, MAX_LINE_LEN - 1, "%d.%d.%d.%d %s\n", ipb[3] & 0xFF, ipb[2] & 0xFF, ipb[1] & 0xFF, ipb[0] & 0xFF, p1);
+	//printf("Prepare to Send %s", buf);
+	for ( i = 0; i < n_channel; i++) {
+		send_to_udp_peer(i, buf, single_msg_len);
+	}
+#else
+
+	for ( i = 0; i < n_channel; i++) {
+		send_to_udp_peer(i, buf, len);
+	}
+#endif
+	return i;
+}
+
+#endif
+
 /*
  * error - wrapper for perror
  */
@@ -209,13 +244,13 @@ int main(int argc, char **argv)
 	/* 
 	 * check command line arguments 
 	 */
-	if (argc < 4 && (argc % 2 != 0)) {
-		fprintf(stderr, "usage: %s <port> <remote name> <remote port> [<remote name> <remote port>] \n", argv[0]);
+	if (argc < 5 && (argc % 2 != 1)) {
+		fprintf(stderr, "usage: %s <local ip> <port> <remote name> <remote port> [<remote name> <remote port>] \n", argv[0]);
 		exit(1);
 	}
 
-	portno = atoi(argv[1]);
-	n = 2;
+	portno = atoi(argv[2]);
+	n = 3;
 	while( n < argc ) {
 		lookup_host(argv[n], text_ip[n_end]);
 		remote_port[n_end] = atoi(argv[n + 1]);
@@ -247,8 +282,9 @@ int main(int argc, char **argv)
 	 */
 	bzero((char *)&serveraddr, sizeof(serveraddr));
 	serveraddr.sin_family = AF_INET;
+	inet_aton(argv[1], &(serveraddr.sin_addr));
 	//serveraddr.sin_addr.s_addr = htonl(INADDR_ANY);
-	serveraddr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+	//serveraddr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 	serveraddr.sin_port = htons((unsigned short)portno);
 
 	/* 
@@ -258,6 +294,8 @@ int main(int argc, char **argv)
 		 sizeof(serveraddr)) < 0) {
 		error("ERROR on binding");
 		exit(3);
+	} else {
+		printf("Bind to %s %s\n", argv[1], argv[2]);
 	}
 
 	/* 
@@ -270,34 +308,45 @@ int main(int argc, char **argv)
 		 * recvfrom: receive a UDP datagram from a client
 		 */
 		char buf[BUFSIZE] = {0,};
-		n = recvfrom(sockfd, buf, BUFSIZE, 0,
-			     (struct sockaddr *)&clientaddr, &clientlen);
-		if (n < 0)
-			error("ERROR in recvfrom");
+		int total = 0;
+#ifdef ADD_IPV4_TAG
+		int offset = 9;
+		n = recvfrom(sockfd, buf + offset, BUFSIZE, 0, (struct sockaddr *)&clientaddr, &clientlen);
+		// gethostbyaddr: determine who sent the datagram
+		// hostp = gethostbyaddr((const char *)&clientaddr.sin_addr.s_addr,
+		//		      sizeof(clientaddr.sin_addr.s_addr),
+		//		      AF_INET);
+		//if (hostp == NULL) {
+		//	error("ERROR on gethostbyaddr");
+		//}
 
-		/* 
-		 * gethostbyaddr: determine who sent the datagram
-		hostp = gethostbyaddr((const char *)&clientaddr.sin_addr.s_addr,
-				      sizeof(clientaddr.sin_addr.s_addr),
-				      AF_INET);
-		if (hostp == NULL)
-			error("ERROR on gethostbyaddr");
-		hostaddrp = inet_ntoa(clientaddr.sin_addr);
-		if (hostaddrp == NULL)
-			error("ERROR on inet_ntoa\n");
-		 */
-		buf[n] = '\0';
+		//hostaddrp = inet_ntoa(clientaddr.sin_addr);
+		//if (hostaddrp == NULL) {
+		//	error("ERROR on inet_ntoa\n");
+		//}
+		total = n;
+		if (n > 0) {
+			sprintf(buf, "%08X", ntohl(clientaddr.sin_addr.s_addr));
+			buf[offset - 1] = ' ';
+			total = n + offset;
+		}
+#else
+		n = recvfrom(sockfd, buf, BUFSIZE, 0, (struct sockaddr *)&clientaddr, &clientlen);
+		total = n;
+#endif
+		if (total < 0) {
+			error("ERROR in recvfrom");
+			continue;
+		}
+		if (total == 0) {
+			continue;
+		}
+
+		buf[total] = '\0';
 		//printf("server received %d bytes from %s\n", n, buf); 
 		//printf("server received %d bytes\n", n); 
 
-		split_and_send(n_end, buf, n);
+		split_and_send(n_end, buf, total);
 
-		/* 
-		 * sendto: echo the input back to the client 
-		n = sendto(sockfd, buf, n, 0,
-			   (struct sockaddr *)&clientaddr, clientlen);
-		if (n < 0)
-			error("ERROR in sendto");
-		*/
 	}
 }

@@ -119,6 +119,10 @@ int send_to_udp_peer(int thread_idx, const char *msg, int len) {
 }
 
 #ifdef MULTI_SPLIT
+
+// multi-line split with only 1 IPv4 TAG, multiple line split by '\n', format such as
+// 01234567 2019-02-13 18:58:57 +976910 2019-02-13 19:06:31 +225223 3,2369079 Buffer I/O error on dev sdc1, logical block 0, lost sync page write
+
 int split_and_send(int n_channel, char *msg, int len) {
 	int i = 0;
 	int n = 0;

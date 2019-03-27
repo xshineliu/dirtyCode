@@ -1,6 +1,7 @@
 // g++ -o tstRnd -O0 ./tstRnd.cc -std=c++11 -fopenmp
 // Gold 5118: 12 Cores x 10 M Same SKT = 24.3; 12 Cores x 5 M Same SKT with HT  = 26.4;
 // 24 Cores x 5 M Dual SKT = 27.8; 12 Cores x 10 M Dual SKT = 28.2; 
+// E5-2650 v4: 21.3 / 25.6 / 27.5 / 23.8
 // ref1: https://diego.assencio.com/?index=6890b8c50169ef45b74db135063c227c
 // ref2: https://www.guyrutenberg.com/2014/05/03/c-mt19937-example/
 

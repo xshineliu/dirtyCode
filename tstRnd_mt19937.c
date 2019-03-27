@@ -1,5 +1,5 @@
 // g++ -o tstRnd -O0 ./tstRnd.cc -std=c++11 -fopenmp
-// Gold 5118, 12 cores with HT, 14.2ns per rand; and without HT, 18.5ns;
+// Gold 5118, 12 Cores x 1.0 M  = 24.3; 24 Cores x 0.5 M = 27.8; 12 Cores x 0.5 M with HT  = 26.4;
 // ref1: https://diego.assencio.com/?index=6890b8c50169ef45b74db135063c227c
 // ref2: https://www.guyrutenberg.com/2014/05/03/c-mt19937-example/
 

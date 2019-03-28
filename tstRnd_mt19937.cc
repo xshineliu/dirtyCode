@@ -64,8 +64,7 @@ int measure(int loops) {
         }
 
           delta = time_ns(&ts) - start_ns;
-          printf("%.06f\n", (double)delta / 1000000.0f);
-          printf("%.03f\n", (double)delta / (double)loops / (double)n_threads);
+          printf("RES: TIME_ALL %.06f PER_LOOP %.03f BW %.03f\n", (double)delta / 1000000.0f, (double)delta / (double)loops, (double)n_threads * (double)loops * 1000.0f / (double)delta);
 	return rand;
 }
 

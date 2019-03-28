@@ -1,7 +1,9 @@
 // gcc -o tstRnd -O0 tstRnd.c -fopenmp
 
+
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <time.h>
 
 #include <omp.h>
@@ -24,8 +26,22 @@ static inline long long unsigned time_ns(struct timespec* const ts) {
                         + (long long unsigned) ts->tv_nsec;
 }
 
+void *counting(void *param)
+{
+        unsigned long long cnt = (unsigned long long) param;
+	void *base = (void *)0;
+	asm volatile ("1:\n\t"
+		"mov %0, %%rax\n\t"
+		"dec %2\n\t"
+		"lea 0x1(%%rax), %0\n\t"
+		"test %2, %2\n\t"
+		"jne 1b\n\t"
+		:"=r"(base):"r"(base), "r"(cnt)
+		: "%rax", "memory");
+	return base;
+}
 
-int measure(int loops) {
+int measure(int loops, int delay) {
         long long unsigned delta;
         int idx = 0;
         int rand = 0;
@@ -50,27 +66,37 @@ int measure(int loops) {
                 for(i = 0; i < loops; i++) {
                         // busy wait until the token has been passed, Invalid in L1 & L2
                         rand += random();
+			if(delay > 0) {
+				rand += (intptr_t)counting((void *)(intptr_t)delay);
+			}
                 }
 
         }
 
-        delta = time_ns(&ts) - start_ns;
-	printf("RES: TIME_ALL %.06f PER_LOOP %.03f BW %.03f\n", (double)delta / 1000000.0f, (double)delta / (double)loops, (double)n_threads * (double)loops * 1000.0f / (double)delta);
+          delta = time_ns(&ts) - start_ns;
+          printf("RES: TIME_ALL %.06f PER_LOOP %.03f BW %.03f\n", (double)delta / 1000000.0f, (double)delta / (double)loops, (double)n_threads * (double)loops * 1000.0f / (double)delta);
 	return rand;
 }
 
 int main(int argc, char *argv[]) {
 
         int loops = 0;
+	int delay = 0;
         int ret = 0;
         if(argc > 1) {
                 loops = atoi(argv[1]);
         }
+
+        if(argc > 2) {
+                delay = atoi(argv[2]);
+        }
+ 
         if(loops < 10) {
                 loops = DEFAULT_LOOP;
         }
-        printf("Use loops = %d\n", loops);
-        ret = measure(loops);
+        printf("Use loops = %d, delay = %d\n", loops, delay);
+        ret = measure(loops, delay);
 
         return EXIT_SUCCESS;
 }
+

@@ -65,10 +65,9 @@
 
 
 #define LOCAL_PORT 100
-//#define REMOTE_SRV "XXXXXXXXXXXXX"
-#define REMOTE_SRV "XXXXXXXXX"
+//#define REMOTE_SRV "10.22.47.69"
+#define REMOTE_SRV "diag.sysste.byted.org"
 #define REMOTE_PORT 8601
-#define NET_TIMEOUT_SEC 30
 
 static const char * version_str = "0.30  2017/10/24 [svn: r141] Bytedance Edition";
 
@@ -333,6 +332,17 @@ void fix_nvme_ns_smartcmd(char *cmd) {
 	cmd[idx] = '\0';
 }
 
+
+// kernel 3.16 does not have directory /sys/class/nvme
+// such old kernel: ls -l /sys/block/
+// lrwxrwxrwx 1 root root 0 Aug 14  2018 nvme0n1 -> ../devices/pci0000:00/0000:00:02.0/0000:04:00.0/block/nvme0n1
+// lrwxrwxrwx 1 root root 0 Aug 14  2018 nvme1n1 -> ../devices/pci0000:80/0000:80:03.0/0000:84:00.0/block/nvme1n1
+// kernel 4.x (4.4 and above) /sys/block/nvme* has different name convention
+// # ls -l /sys/block/
+// lrwxrwxrwx 1 root root 0 Aug 13  2018 nvme0n1 -> ../devices/pci0000:00/0000:00:02.0/0000:04:00.0/nvme/nvme0/nvme0n1
+// # ls -l /sys/class/nvme
+// lrwxrwxrwx 1 root root 0 Jul 12  2018 nvme0 -> ../../devices/pci0000:00/0000:00:02.0/0000:04:00.0/nvme/nvme0
+
 int scan_nvme_ns(){
 	DIR* dir;
 	//char pci_path[16];
@@ -400,6 +410,8 @@ int scan_nvme_ns(){
 				strcpy(e->disk_type, "NVME SSD");
 				strcpy(e->connect_type, "PCIE");
 
+				// # ls -l /sys/class/nvme/
+				// lrwxrwxrwx 1 root root 0 Jul 12  2018 nvme0 -> ../../devices/pci0000:00/0000:00:02.0/0000:04:00.0/nvme/nvme0
 				print_host_pci_path(nvme_id, e);
 				e->sizeGB = (float) (ns.nsze * 512 / 1000 / 1000 / 1000);
 				//printf("*** %f %ld %ld %ld***\n", e->sizeGB, ns.nsze, ns.ncap, ns.nuse);
@@ -538,6 +550,7 @@ static int pr2serr(const char * fmt, ...);
 #define NR_VD_STR "Number of Virtual Disks"
 #define VD_TITLE_STR "Virtual Drive"
 #define VD_NR_COMPO_STR "Number Of Drives"
+#define NR_SPAN "Number of Spans"
 #define PD_TITLE_STR "PD: "
 #define PD_EC_STR "Enclosure Device ID"
 #define PD_SLOT_STR "Slot Number"
@@ -755,8 +768,7 @@ void mega_jbod_list() {
 		}
 	}
 
-
-	fclose(fp);
+	pclose(fp);
 }
 
 void mega_ld_list() {
@@ -800,9 +812,11 @@ void mega_ld_list() {
 	}
 
 
-	while((p = fgets(buf, 128, fp))) {
-		int nr_pd = -1;
+	int nr_pd = -1;
+	int nr_span = -1;
+	int nr_disk_per_span = -1;
 
+	while((p = fgets(buf, 128, fp))) {
 		len = strlen(buf);
 		buf[len - 1] = '\0';
 		//printf("%s\n", p);
@@ -810,12 +824,29 @@ void mega_ld_list() {
 		if(strncmp(buf, VD_TITLE_STR, strlen(VD_TITLE_STR)) == 0) {
 			sscanf(buf, "Virtual Drive: %d", &vd_idx);
 			//printf("vd_idx %d\n", vd_idx);
+			// not a MUST here
+			nr_pd = -1;
+			nr_span = -1;
+			nr_disk_per_span = -1;
 		}
 
 		if(strncmp(buf, VD_NR_COMPO_STR, strlen(VD_NR_COMPO_STR)) == 0) {
 			sscanf(buf, "Number Of Drives    : %d", &nr_pd);
-			//printf("nr_pd: %d\n", nr_pd);
+			sscanf(buf, "Number Of Drives per span:%d", &nr_disk_per_span);
+			//printf("%s %d\n", buf, nr_disk_per_span);
+			//printf("1 - nr_pd: %d\n", nr_pd);
 		}
+
+		if(strncmp(buf, NR_SPAN, strlen(NR_SPAN)) == 0) {
+			sscanf(buf, "Number of Spans: %d", &nr_span);
+			//printf("nr_span: %d\n", nr_span);
+		}
+
+		if(nr_disk_per_span > 1 && nr_span > 0) {
+			nr_pd = nr_disk_per_span * nr_span;
+			//printf("2 - nr_pd: %d\n", nr_pd);
+		}
+
 
 		if(nr_pd > 0) {
 			int j = 0;
@@ -826,6 +857,7 @@ void mega_ld_list() {
 
 			for(j = 0; j < nr_pd; j++) {
 
+				//printf("VD %d - PD %d\n", vd_idx, j);
 				//printf("%d | %d | ", vd_idx, j);
 
 				//raid_ld_pd_idx
@@ -903,13 +935,16 @@ void mega_ld_list() {
 
 			} // end all pd
 
-			// restore nr_pd to -1
+			// restore nr_pd and related to -1, a MUST here
 			nr_pd = -1;
+			nr_span = -1;
+			nr_disk_per_span = -1;
+
 		} // end pd list
 
 	} // end all vd
 
-	fclose(fp);
+	pclose(fp);
 }
 
 
@@ -1167,7 +1202,7 @@ int vpdb1(const char *devicefile, struct disk_entry *e)
       return 1;
    }
 
-   /* Extract SN */
+   /* Extract Disk Type */
    if ((reply_buffer[1] & 0xFF) != 0xb1)
    {
       fprintf(stderr, "vpd b1 Response code error %x\n",

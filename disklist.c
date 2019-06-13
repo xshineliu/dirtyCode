@@ -65,11 +65,10 @@
 
 
 #define LOCAL_PORT 100
-//#define REMOTE_SRV "10.22.47.69"
-#define REMOTE_SRV "diag.sysste.byted.org"
+#define REMOTE_SRV "10.22.47.69"
 #define REMOTE_PORT 8601
 
-static const char * version_str = "0.30  2017/10/24 [svn: r141] Bytedance Edition";
+static const char * version_str = "0.30  2017/10/24 [svn: r141] Based On Edition";
 
 #define FT_OTHER 0
 #define FT_BLOCK 1

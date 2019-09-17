@@ -1,3 +1,10 @@
+// Usage pe -s "/local_dir/shell_script_file_or_binary_to_transerfer" -n 1024  -l /local_dir/ip.list
+// file default to transfer to remote /tmp/
+// execute as
+// Usage pe -s "/remote_dir/command with_any_args" -n 1024 -x  -l /local_dir/ip.list
+
+// compile gcc -O2 -o pe ParallelExecute.c
+
 #define _GNU_SOURCE
 
 #include <stdio.h>
@@ -22,14 +29,16 @@
 
 #include <libgen.h>
 
-#define NR_PARALLEL 4096
+#define NR_PARALLEL 40960
 #define BUF_SIZE 4096
 #define EVT_MAX 1024
 #define IP_MAX (1024 * 1024 * 1024)
+#define PATH_LEN_MAX 256
+#define ARGS_TLEN_MAX 256
 
 struct config {
-	char script_path[64];
-	char extra_args[64];
+	char script_path[PATH_LEN_MAX];
+	char extra_args[ARGS_TLEN_MAX];
 	char *base_name;
 	int exec;
 	int signal_fd;
@@ -38,6 +47,7 @@ struct config {
 	int verbose;
 	int pos;
 	int alive;
+	int con_timeout;
 };
 
 struct stupidMap {
@@ -113,6 +123,7 @@ int add_one(int epollfd, int seq, int exec, const char* arg1,
 
 	if (pid == 0) {
 		unsigned char *ip = (unsigned char *) (iplist + seq);
+		char timeout_str[64];
 		char buf[64];
 		close(pipefd[0]);
 
@@ -120,6 +131,7 @@ int add_one(int epollfd, int seq, int exec, const char* arg1,
 		dup2(pipefd[1], STDOUT_FILENO);
 		dup2(STDOUT_FILENO, STDERR_FILENO);
 
+        sprintf(timeout_str, "-oConnectTimeout=%d", cfg.con_timeout);
 
 		if (exec == 0) {
 			const char* path_src = arg1;
@@ -129,7 +141,7 @@ int add_one(int epollfd, int seq, int exec, const char* arg1,
 					path_dst);
 			//printf("Child running: %s\n", buf);
 			//fflush(stdout);
-			execl("/usr/bin/scp", "/usr/bin/scp", "-oConnectTimeout=1",
+			execl("/usr/bin/scp", "/usr/bin/scp", timeout_str,
 					"-oPasswordAuthentication=no", "-oStrictHostKeyChecking=no",
 					"-pr", path_src, buf, NULL);
 		} else {
@@ -138,7 +150,7 @@ int add_one(int epollfd, int seq, int exec, const char* arg1,
 			sprintf(buf, "root@%u.%u.%u.%u", ip[3], ip[2], ip[1], ip[0]);
 			assert((arg1 != NULL) && (arg2 != NULL));
 			sprintf(cmd_path, "%s %s", arg1, arg2);
-			execl("/usr/bin/ssh", "/usr/bin/ssh", "-oConnectTimeout=1",
+			execl("/usr/bin/ssh", "/usr/bin/ssh", timeout_str,
 					"-oPasswordAuthentication=no", "-oStrictHostKeyChecking=no",
 					buf, cmd_path, NULL);
 		}
@@ -209,7 +221,6 @@ int core_process(int epollfd) {
 
 				case SIGCHLD:
 
-
 					// wait for any other not trigger SIGCHLD
 					// ref https://stackoverflow.com/questions/8398298/handling-multiple-sigchld
 					// "By contrast, if multiple instances of a standard signal are delivered while that signal is currently blocked, then only one instance is queued"
@@ -235,6 +246,11 @@ int core_process(int epollfd) {
 					    fprintf(stderr, "[INFO] %d %d: pid %d ip %u.%u.%u.%u returned %d\n", nr_exit2,
 					    		slot, pid, p[3], p[2], p[1], p[0], retcode);
 					    cfg.alive--;
+					}
+
+					if(nr_exit2 == cfg.total_ips) {
+						stop = 1;
+						exit(0);
 					}
 
 					/*
@@ -265,10 +281,10 @@ int core_process(int epollfd) {
 
 
 
-
 			int seq = (events[i].data.u64 >> 32);
 			int ip = iplist[seq];
 			unsigned char *p = (unsigned char *)&ip;
+
 
 			// handle other events
 			if (!(events[i].events & EPOLLIN) || (events[i].events & EPOLLERR)
@@ -277,9 +293,9 @@ int core_process(int epollfd) {
 				//		events[i].data.fd, events[i].events);
 				end = 1;
 			}
-			if (!end) {
+			//if (!end) {
 				t = read(events[i].data.fd, buf, BUF_SIZE);
-			}
+			//}
 			if (t < 1) {
 				end = 1;
 			} else if (t < BUF_SIZE){
@@ -289,7 +305,9 @@ int core_process(int epollfd) {
 			if (end) {
 				epoll_ctl(epollfd, EPOLL_CTL_DEL, events[i].data.fd, NULL);
 				close(events[i].data.fd);
-				continue;
+				if(t < 1) {
+					continue;
+				}
 			}
 
 			// printf buf may has overflow issue when t == BUF_SIZE
@@ -318,8 +336,8 @@ int main(int argc, char *argv[]) {
 
 	int epollfd = epoll_create(1);
 	struct epoll_event ev;
-	char ipListPath[64] = {'\0',};
-	char scriptPath[64] = {'\0',};
+	char ipListPath[PATH_LEN_MAX] = {'\0',};
+	char scriptPath[PATH_LEN_MAX] = {'\0',};
 
 	int n, opt;
 
@@ -344,8 +362,9 @@ int main(int argc, char *argv[]) {
 	epoll_ctl(epollfd, EPOLL_CTL_ADD, cfg.signal_fd, &ev);
 
 	cfg.parallel_num = NR_PARALLEL;
+	cfg.con_timeout = 1;
 
-	while ((opt = getopt(argc, argv, "vxs:e:n:h")) != -1) {
+	while ((opt = getopt(argc, argv, "vxs:e:l:n:t:h")) != -1) {
 		switch (opt) {
 		case 'v':
 			cfg.verbose++;
@@ -354,16 +373,20 @@ int main(int argc, char *argv[]) {
 			cfg.exec = 1;
 			break;
 		case 's':
-			strncpy(cfg.script_path, optarg, 64);
+			strncpy(cfg.script_path, optarg, PATH_LEN_MAX - 1);
 			break;
 		case 'e':
-			strncpy(cfg.extra_args, optarg, 64);
+			strncpy(cfg.extra_args, optarg, ARGS_TLEN_MAX -1);
 			break;
 		case 'l':
-			strncpy(ipListPath, optarg, 64);
+			strncpy(ipListPath, optarg, PATH_LEN_MAX - 1);
 			break;
 		case 'n':
 			cfg.parallel_num = atoi(optarg);
+			break;
+		case 't':
+			cfg.con_timeout = atoi(optarg);
+			break;
 		case 'h':
 		default:
 			//usage();
@@ -371,6 +394,13 @@ int main(int argc, char *argv[]) {
 		}
 	}
 
+    if(cfg.con_timeout < 1) {
+        cfg.con_timeout = 1;
+    }
+
+    if(cfg.con_timeout > 60) {
+        cfg.con_timeout = 60;
+    }
 
 	if(cfg.parallel_num < 1 || cfg.parallel_num > NR_PARALLEL) {
 		cfg.parallel_num = NR_PARALLEL;
@@ -383,7 +413,7 @@ int main(int argc, char *argv[]) {
 	if(ipListPath[0]) {
 		n = getIPList(ipListPath);
 	} else {
-		n = getIPList("/Users/shine/Documents/GmetadList.txt");
+		n = getIPList("/Users/shine/Documents/GmetadList.txtXXX");
 	}
 
 	if(n < 1) {
@@ -398,7 +428,7 @@ int main(int argc, char *argv[]) {
 		exit(-1);
 	}
 
-	strncpy(scriptPath, cfg.script_path, 64);
+	strncpy(scriptPath, cfg.script_path, PATH_LEN_MAX - 1);
 	cfg.base_name = basename(scriptPath);
 
 	if(cfg.exec == 0) {

@@ -25,7 +25,7 @@
 #include <arpa/inet.h>
 
 #define NR_MAX_THREADS 64
-#define MAX_CONN_PER_THREAD 40960
+#define MAX_CONN_PER_THREAD 409600
 #define FLUSH_DURATION_DEFAULT 240
 #define FLUSH_DURATION_VARIABLE 60
 #define NR_MAX_POLL 8192
@@ -42,7 +42,7 @@
 
 #define STEP_DATA_BLOCK_SIZE (8 * 1024) // 8 KiB
 #define MAX_DATA_BLOCK_SIZE (128 * 1024) // 128 KiB
-#define EXT_DATA_BLOCK_SIZE (32 * 1024 * 1024) // 32 MiB
+#define EXT_DATA_BLOCK_SIZE (2 * 1024 * 1024) // 2 MiB
 
 #define REALLOC_LAT 180
 #define TZ_OFFSET 8
@@ -207,7 +207,7 @@ int get_month_seq(int *val){
 // dirty code, FIXME TODO
 #ifdef UDP_FORWARD_RT
 #define UDP_SERVER_IP "127.0.0.1"
-#define UDP_SERVER_PORT 50000
+//#define UDP_SERVER_PORT 50000
 time_t udp_conn_last_try_tick[NR_MAX_THREADS] = {0,};
 int udp_conn_sfd[NR_MAX_THREADS] = {0,};
 struct sockaddr_in udp_srv_sock[NR_MAX_THREADS];
@@ -252,7 +252,9 @@ int send_to_udp_peer(struct session *s, const char *msg, int len) {
 	if( sockfd < 1 ) {
 		if(connect_udp_peer(thread_idx) != 0 ) {
 			// connnect not succesful
-			//fprintf(stderr, "CONN FAIL\n");
+			if (cfg.verbose > 3) {
+				fprintf(stderr, "CONN FAIL\n");
+			}
 			return 1;
 		}
 	}
@@ -261,9 +263,11 @@ int send_to_udp_peer(struct session *s, const char *msg, int len) {
 	sockfd = udp_conn_sfd[thread_idx];
 	ret = sendto(sockfd, msg, len, 0,
 			(const struct sockaddr *) udp_sock, sizeof(struct sockaddr_in));
-	// msg[len] = '\0';
-	//fprintf(stderr, "CONN SUCC SEND to thread %d fd %d with %d: %s\n",
-	//		thread_idx, sockfd, ret, msg);
+	if (cfg.verbose > 3) {
+		*((char *)msg + len) = '\0';
+		fprintf(stderr, "CONN SUCC SEND to thread %d fd %d with %d: %s\n",
+			thread_idx, sockfd, ret, msg);
+	}
 	return 0;
 }
 #endif
@@ -298,6 +302,55 @@ int mkpath(char* file_path, mode_t mode) {
 	return 0;
 }
 
+// called before write, only the disk write threads
+int handle_filesize_exceeded(struct session *s) {
+	if(s == NULL || s->on_disk_fd < 0) {
+		// not to handle
+		return 1;
+	}
+	// minimize system call
+	// size_t pos = lseek(s->on_disk_fd, 0, SEEK_CUR);
+	if(s->rough_file_offset < cfg.max_file_size) {
+		//printf("^^^ %x %x %x %x\n", s->rough_file_offset,
+		//		s->network_bytes, s->disk_bytes, cfg.max_file_size);
+		return 2;
+	}
+
+	char fname[64] = {0,};
+	char srcf[512] = {0,};
+	char dstf[512] = {0,};
+	sprintf(fname, "/proc/self/fd/%d", s->on_disk_fd);
+	int ret = readlink(fname, srcf, 1024);
+
+	if(fname[0] == 0 || ret == -1) {
+		// error!!! FIXME
+		printf("[ERROR] readlink error %d %x %x %x %x %s %s %s\n", ret, s->rough_file_offset,
+				s->network_bytes, s->disk_bytes, cfg.max_file_size, fname, srcf, dstf);
+		return 3;
+	}
+
+	// TODO check filename with "buf" if it is present now
+	sprintf(dstf, "%s.last", srcf);
+	// very very very rare case, closed by other thread?
+	close(s->on_disk_fd);
+	s->on_disk_fd = -1;
+
+	// unlink even not exist
+	remove(dstf);
+	rename(srcf, dstf);
+
+	if (cfg.verbose > 0) {
+		fprintf(stderr,
+			"[INFO] File Size Exceed: TS %d/%d session %d/%d ip %08x %x %x %x %x %s %s %s\n",
+			gstats.ticks, s->start_ticks, s->threadidx, s->slot_idx, s->ip, s->rough_file_offset,
+			s->network_bytes, s->disk_bytes, cfg.max_file_size, fname, srcf, dstf);
+	}
+
+	s->rough_file_offset = 0;
+	// will not open new file, until session_set_on_disk_log_filename
+	return 0;
+}
+
 /* must be called by get_new_session, or safe point when switch to new file */
 int session_set_on_disk_log_filename(struct session *s) {
 	int fd = -1;
@@ -323,7 +376,7 @@ int session_set_on_disk_log_filename(struct session *s) {
 	sprintf(fileName, MONTHLY_DIR_PREFIX, p[0] % cfg.nr_dir + 1,
 			cfg.log_idf, date_str1, ip_str1, ip_str2);
 #else
-#ifdef FIX_LOG_NAME
+#ifdef FIX_LOG_FILE
 	sprintf(fileName, "/var/run/%s/%s/%s.log", cfg.log_idf, ip_str1, ip_str2);
 #else
 	// the default case
@@ -355,6 +408,35 @@ int session_set_on_disk_log_filename(struct session *s) {
 		return -1;
 	}
 
+	struct stat statbuf;
+	memset(&statbuf, 0, sizeof(statbuf));
+	fstat(fd, &statbuf);
+	// TODO check fstat return code
+	s->rough_file_offset = statbuf.st_size;
+
+	if(s->rough_file_offset > cfg.max_file_size) {
+		char fname[64] = {0,};
+		char srcf[512] = {0,};
+		char dstf[512] = {0,};
+		sprintf(fname, "/proc/self/fd/%d", s->on_disk_fd);
+		int ret = readlink(fname, srcf, 1024);
+		// TODO assume ret OK
+		sprintf(dstf, "%s.last", srcf);
+		close(s->on_disk_fd);
+		s->on_disk_fd = -1;
+
+		// unlink even not exist
+		remove(dstf);
+		rename(srcf, dstf);
+		// no append here
+		fd = open(fileName, O_CREAT | O_WRONLY, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+		if(fd < 0) {
+			return -1;
+		}
+		s->rough_file_offset = 0;
+	}
+
+
 	// if open successful, switch to the new fd, else relies on the old fd
 	// TODO: retry control
 
@@ -365,7 +447,7 @@ int session_set_on_disk_log_filename(struct session *s) {
 	}
 	// switch to new on-disk fd
 	s->on_disk_fd = fd;
-	s->rough_file_offset = 0;
+	//s->rough_file_offset = 0;
 	return fd;
 }
 
@@ -982,7 +1064,7 @@ int write2disk(struct session *s) {
 	ftruncate(s->on_disk_fd, 0);
 	lseek(s->on_disk_fd, 0, SEEK_SET);
 #endif
-	
+
 	while (ntries > 0 && nleft > 0) {
 		rc = write(s->on_disk_fd, buf, nleft);
 		if (rc < -1) {
@@ -1012,55 +1094,6 @@ int write2disk(struct session *s) {
 	s->disk_bytes += (towrite - nleft);
 	s->rough_file_offset += (towrite - nleft);
 	return towrite - nleft;
-}
-
-// called before write, only the disk write threads
-int handle_filesize_exceeded(struct session *s) {
-	if(s == NULL || s->on_disk_fd < 0) {
-		// not to handle
-		return 1;
-	}
-	// minimize system call
-	// size_t pos = lseek(s->on_disk_fd, 0, SEEK_CUR);
-	if(s->rough_file_offset < cfg.max_file_size) {
-		//printf("^^^ %x %x %x %x\n", s->rough_file_offset,
-		//		s->network_bytes, s->disk_bytes, cfg.max_file_size);
-		return 0;
-	}
-
-	char fname[64] = {0,};
-	char srcf[512] = {0,};
-	char dstf[512] = {0,};
-	sprintf(fname, "/proc/self/fd/%d", s->on_disk_fd);
-	int ret = readlink(fname, srcf, 1024);
-
-	if(fname[0] == 0 || ret == -1) {
-		// error!!! FIXME
-		printf("[ERROR] readlink error %d %x %x %x %x %s %s %s\n", ret, s->rough_file_offset,
-				s->network_bytes, s->disk_bytes, cfg.max_file_size, fname, srcf, dstf);
-		return 2;
-	}
-
-	// TODO check filename with "buf" if it is present now
-	sprintf(dstf, "%s.last", srcf);
-	// very very very rare case, closed by other thread?
-	close(s->on_disk_fd);
-	s->on_disk_fd = -1;
-
-	// unlink even not exist
-	remove(dstf);
-	rename(srcf, dstf);
-
-	if (cfg.verbose > 0) {
-		fprintf(stderr,
-			"[INFO] File Size Exceed: TS %d/%d session %d/%d ip %08x %x %x %x %x %s %s %s\n",
-			gstats.ticks, s->start_ticks, s->threadidx, s->slot_idx, s->ip, s->rough_file_offset,
-			s->network_bytes, s->disk_bytes, cfg.max_file_size, fname, srcf, dstf);
-	}
-
-	s->rough_file_offset = 0;
-	// will not open new file, until session_set_on_disk_log_filename
-	return 0;
 }
 
 int disk_write_thread(void *data) {
@@ -1428,7 +1461,7 @@ int enlarge_session_buf(struct session *s, int gap) {
 
 
 
-#ifdef FIX_LOG_NAME
+#ifdef FIX_LOG_FILE
 
 // fixed assume a record starts with "top", and end with 3x '\n'
 

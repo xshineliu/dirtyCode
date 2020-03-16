@@ -256,7 +256,6 @@ static ssize_t send_ping6(int32_t icmp_fd, uint8_t *buf, uint16_t seq,
     icmp6h->icmp6_cksum = 0;
     *p_eid = e->id;
 
-    e->last_send = t_pkt->tv_sec * 1000 + t_pkt->tv_usec / 1000;
 
     //We dont need to use htons here. The reason is that the sum will for
     //example be 0x1cf7 on a LE machine and 0xf71c on a BE machine. This will be
@@ -264,7 +263,7 @@ static ssize_t send_ping6(int32_t icmp_fd, uint8_t *buf, uint16_t seq,
     //icmp6h->icmp6_cksum = calc_csum(buf, sndlen);
 
     n = sendto(icmp_fd, buf, sndlen, 0, (struct sockaddr*) &(e->addr_con),
-    		sizeof(struct sockaddr));
+    		sizeof(struct sockaddr_in6));
     if(n < 0) {
     	return n;
     }
@@ -682,7 +681,6 @@ int main(int argc, char *argv[])
     }
 
 
-
     fprintf(stdout, "Interface: %s Threads: %d Hosts: %d\n", g_iface, n_workers, nLine);
 
 
@@ -743,6 +741,12 @@ int main(int argc, char *argv[])
     			// not expired
     		}
     	}
+		if(n_ping_send == 0) {
+			// finish all, and all succ
+			fprintf(stdout, " *** %03d: All host are live, done\n",
+					nloop);
+			break;
+		}
 		usleep(100000);
 		fprintf(stdout, " *** %03d: total %ld send\n",
 				nloop, n_ping_send);

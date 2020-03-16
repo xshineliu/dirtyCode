@@ -1,5 +1,4 @@
 // gcc -g  -o batchping batchping.c -lpthread
-// too many raw socket fd will lead kernel perf issue on ipv4_xxxx function
 
 /*
  *
@@ -554,7 +553,7 @@ static void usage()
     printf("\t-n : number of threads\n");
     printf("\t-l : local IP to use\n");
     printf("\t-c : number of packets to send (default: run indefinitely\n");
-    printf("\t-f : how long to sleep after first packet is sent (default: 5sec)\n");
+    printf("\t-f : IPlist file\n");
     printf("\t-t : how long to wait between packets (default: 1 sec)\n");
     printf("\t-s : inital packet size (default: 200 byte)\n");
     printf("\t-p : normal packet size (default: 64 byte)\n");
@@ -656,7 +655,6 @@ int main(int argc, char *argv[])
         fprintf(stderr, "Interface name is longer than limit\n");
         exit(EXIT_FAILURE);
     }
-
 
 
     fprintf(stdout, "Interface: %s Threads: %d Hosts: %d\n", g_iface, n_workers, nLine);

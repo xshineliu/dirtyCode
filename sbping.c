@@ -264,7 +264,7 @@ static ssize_t send_ping6(int32_t icmp_fd, uint8_t *buf, uint16_t seq,
     //icmp6h->icmp6_cksum = calc_csum(buf, sndlen);
 
     n = sendto(icmp_fd, buf, sndlen, 0, (struct sockaddr*) &(e->addr_con),
-    		sizeof(struct sockaddr));
+    		sizeof(struct sockaddr_in6));
     if(n < 0) {
     	return n;
     }
@@ -682,7 +682,6 @@ int main(int argc, char *argv[])
         fprintf(stderr, "Interface name is longer than limit\n");
         exit(EXIT_FAILURE);
     }
-
 
 
     fprintf(stdout, "Interface: %s Threads: %d Hosts: %d\n", g_iface, n_workers, nLine);

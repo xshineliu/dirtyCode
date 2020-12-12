@@ -23,6 +23,9 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <pthread.h>
 
 #define NR_MAX_THREADS 64
 #define MAX_CONN_PER_THREAD 409600
@@ -371,14 +374,11 @@ int session_set_on_disk_log_filename(struct session *s) {
 		int ret = readlink(fname, srcf, 1024);
 		// TODO assume ret OK
 		sprintf(dstf, "%s.last", srcf);
-		if (s->on_disk_fd >= 0) {
-		    close(s->on_disk_fd);
-		    s->on_disk_fd = -1;
-		}
-
+		//fprintf(stderr, "[INFO] rename %s from %s to %s, will use %s\n", fname, srcf, dstf, fileName);
 		// unlink even not exist
 		remove(dstf);
 		rename(srcf, dstf);
+		close(fd);
 		//fprintf(stderr, "[INFO] rename %s from %s to %s, will use %s\n", fname, srcf, dstf, fileName);
 		// no append here, rewrite from begin even it aleady exists
 		fd = open(fileName, O_CREAT | O_WRONLY, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
@@ -387,6 +387,9 @@ int session_set_on_disk_log_filename(struct session *s) {
 				fileName, strerror(errno));
 			return -1;
 		}
+		sprintf(fname, "/proc/self/fd/%d", fd);
+		ret = readlink(fname, srcf, 1024);
+		//fprintf(stderr, "[INFO] new fd %d ====> %s\n", fd, srcf);
 		s->rough_file_offset = 0;
 	}
     // =========================  check if the old file is too large  BEGIN ===================
@@ -1019,7 +1022,7 @@ int write2disk(struct session *s) {
 	ftruncate(s->on_disk_fd, 0);
 	lseek(s->on_disk_fd, 0, SEEK_SET);
 #endif
-	
+
 	while (ntries > 0 && nleft > 0) {
 		rc = write(s->on_disk_fd, buf, nleft);
 		if (rc < -1) {
@@ -1100,7 +1103,7 @@ int handle_filesize_exceeded(struct session *s) {
 	return 0;
 }
 
-int disk_write_thread(void *data) {
+void* disk_write_thread(void *data) {
 	int thread_idx, slot_idx, rc, sfd, tid;
 	struct session *s = NULL, **sptr;
 
@@ -1366,7 +1369,7 @@ int disk_write_thread(void *data) {
 		}
 	} // should not return
 
-	return 0;
+	return (void *)0;
 }
 
 // must be called with s->lock held, and s->disk_io_in_progress not 1
@@ -1818,7 +1821,7 @@ void drain_client(struct session *s) {
 	// delete_session_ptr(s) will be handled by del_session, to be delayed
 }
 
-int process_thread(void *data) {
+void * process_thread(void *data) {
 	void *dptr;
 	int i, ret;
 	int thread_idx = (int) (unsigned long) data;
@@ -1881,10 +1884,10 @@ int process_thread(void *data) {
 
 	fprintf(stderr, "[INFO] thread %d exit\n", thread_idx);
 	/* thread exit, should not happen */
-	return 0;
+	return (void *)0;
 }
 
-inline void init_gstat(void) {
+void init_gstat(void) {
 
 	memset(&gstats, 0, sizeof(gstats));
 

@@ -98,8 +98,9 @@ void core_test(size_t block_size, unsigned long long int itr1) {
 
 	p1 = alloc_memory(to_alloc);
 	p2 = alloc_memory(to_alloc);
-
-	printf("%d %p %p %llx\n", block_size, p1, p2, (p1 > p2) ? (p1 - p2) : (p2 - p1));
+	memset(p1, 0, to_alloc);
+	memset(p2, 0, to_alloc);
+	printf("%d %p %p %llx\t", block_size, p1, p2, (p1 > p2) ? (p1 - p2) : (p2 - p1));
 
 
 	memset(&r1, 0, sizeof(r1));

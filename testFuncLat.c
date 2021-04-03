@@ -1,5 +1,5 @@
 /*
- * TODO
+ * gcc -O2 -o testFunc -fno-plt -static  testFunc.c
  */
 
 #define _GNU_SOURCE

@@ -21,15 +21,21 @@
 
 #include <sys/time.h>
 #include <sys/resource.h>
+
+void *(*my_memcpy)(void *dest, const void *src, size_t n);
+
 /* Linux Only */
 #define DEF_HUGE_PAGE_SIZE (2 * 1024 * 1024)
 
+#define MAX_GAP (2 * 1024 * 1024)
+#define DEF_PAGE_SIZE (4 * 1024)
 
-#define CP_ONE {memcpy(p2, p1, block_size);}
+#define CP_ONE {(*my_memcpy)(p2, p1, block_size);}
 #define CP_FIVE CP_ONE CP_ONE CP_ONE CP_ONE CP_ONE
 #define CP_TEN  CP_FIVE CP_FIVE
 #define CP_FIFTY        CP_TEN CP_TEN CP_TEN CP_TEN CP_TEN
 #define CP_HUNDRED      CP_FIFTY CP_FIFTY
+
 
 // global    ///////////
 float ms_pf = 0.0f;
@@ -52,6 +58,35 @@ static inline unsigned long long time_ns(struct timespec* const ts) {
 			+ (unsigned long long) ts->tv_nsec;
 }
 
+void* dummyMemcpy(void* dest, const void* src, size_t sz) {
+/*
+  __memcpy_avx_unaligned_erms():
+  mov        %rdi,%rax
+  cmp        $0x20,%rdx
+  jb         52
+  cmp        $0x40,%rdx
+  ja         b2
+  vmovdqu    (%rsi),%ymm0
+  vmovdqu    -0x20(%rsi,%rdx,1),%ymm1
+  vmovdqu    %ymm0,(%rdi)
+  vmovdqu    %ymm1,-0x20(%rdi,%rdx,1)
+  vzeroupper
+  retq
+*/
+
+  __asm__ __volatile__
+    (
+     //"  .global __asm_dummy_memcpy\n"
+     //"__asm_dummy_memcpy:\n"
+     "  mov    %rdi, %rax\n"
+     "  cmp    $0x20, %rdx\n"
+     "  jb     1f\n"
+     "  cmp    $0x40, %rdx\n"
+     "  ja     1f\n"
+     " 1:\n"
+     //"  ret\n"
+     );
+}
 
 
 int hugepage_forced = 0;
@@ -80,28 +115,42 @@ void* alloc_memory(size_t n_bytes) {
 }
 
 
-void core_test(size_t block_size, unsigned long long int itr1) {
+void core_test(size_t block_size, size_t off1, size_t off2, size_t gap, unsigned long long int itr1) {
 	unsigned long long delta1 = 0, delta2 = 0;
 	unsigned long long i = 0;
+	register char *m1 = NULL, *m2 = NULL;
 	register char *p1 = NULL, *p2 = NULL;
 	unsigned long long start_ns;
 	struct timespec ts;
 	struct rusage r1, r2;
 	size_t to_alloc = 0;
-	unsigned long long int itr2 = 1000;
+	unsigned long long int itr2 = 100;
 
-	if(block_size < 4096) {
-		to_alloc = 4096;
+	if(block_size < DEF_PAGE_SIZE) {
+		to_alloc = DEF_PAGE_SIZE;
 	} else {
 		to_alloc = block_size;
 	}
 
-	p1 = alloc_memory(to_alloc);
-	p2 = alloc_memory(to_alloc);
-	memset(p1, 0, to_alloc);
-	memset(p2, 0, to_alloc);
-	printf("%d %p %p %llx\t", block_size, p1, p2, (p1 > p2) ? (p1 - p2) : (p2 - p1));
+    // add guard page in the end
+	m1 = alloc_memory(to_alloc + MAX_GAP);
+    memset(m1, 0, to_alloc + MAX_GAP);
 
+    if(gap != 0) {
+	    m1 = alloc_memory(to_alloc + 3 * MAX_GAP);
+        memset(m1, 0, to_alloc + 3 * MAX_GAP);
+        p1 = m1 + off1;
+	    p2 = p1 + gap;
+    } else {
+	    m1 = alloc_memory(to_alloc + MAX_GAP);
+        memset(m1, 0, to_alloc + MAX_GAP);
+	    m2 = alloc_memory(to_alloc + MAX_GAP);
+        memset(m2, 0, to_alloc + MAX_GAP);
+        p1 = m1 + off1;
+        p2 = m2 + off1;
+    }
+
+	printf("%d %p %p 0x%llx\t", block_size, p1, p2, (p1 > p2) ? (p1 - p2) : (p2 - p1));
 
 	memset(&r1, 0, sizeof(r1));
 	memset(&r1, 0, sizeof(r2));
@@ -139,14 +188,18 @@ int main(int argc, char *argv[]) {
 
 	unsigned long mem_size_per_thread_in_kb = 4;
 	unsigned int scale = 1;
-	unsigned long seg_size = 64;
+	size_t seg_size = 64;
+	size_t seg_gap = 4096;
+	size_t off1 = 0;
+	size_t off2 = 0;
 	double delta = 0.0f;
 	unsigned long long repeat = 1000UL * 10UL;
+    my_memcpy = memcpy;
 
-	while ((opt = getopt(argc, argv, "s:mlg:r:")) != -1) {
+	while ((opt = getopt(argc, argv, "s:mx:y:lg:r:n")) != -1) {
 		switch (opt) {
 		case 's':
-			mem_size_per_thread_in_kb = strtoul(optarg, NULL, 0);
+			seg_size = strtoul(optarg, NULL, 0);
 			break;
 		case 'm':
 			scale = 1024L;
@@ -154,8 +207,17 @@ int main(int argc, char *argv[]) {
 		case 'l':
 			hugepage_forced = 1;
 			break;
+		case 'n':
+            my_memcpy = dummyMemcpy;
+			break;
+		case 'x':
+			off1 = strtoul(optarg, NULL, 0);
+			break;
+		case 'y':
+			off2 = strtoul(optarg, NULL, 0);
+			break;
 		case 'g':
-			seg_size = strtoul(optarg, NULL, 0);
+			seg_gap = strtoul(optarg, NULL, 0);
 			break;
 		case 'r':
 			repeat = strtoul(optarg, NULL, 0);
@@ -165,16 +227,18 @@ int main(int argc, char *argv[]) {
 		}
 	}
 
+/*
 	mem_size_per_thread_in_kb *= scale;
 	if (mem_size_per_thread_in_kb < 4) {
 		fprintf(stderr, "%d must be >= 4\n", mem_size_per_thread_in_kb);
 		exit(EXIT_FAILURE);
 	}
+*/
 
+    if (off1 + off2 + seg_gap > 3 * MAX_GAP) {
+		fprintf(stderr, "total gap must be <= 0x%llx\n", 3 * MAX_GAP);
+    }
 
-	n_bytes = mem_size_per_thread_in_kb * 1024L;
-
-	core_test(seg_size, repeat);
-
+	core_test(seg_size, off1, off2, seg_gap, repeat);
 	return EXIT_SUCCESS;
 }

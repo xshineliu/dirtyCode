@@ -89,6 +89,123 @@ void* dummyMemcpy(void* dest, const void* src, size_t sz) {
 }
 
 
+// caller must make sure the address alligned to 64 bytes
+void* my_memcpy_64(void* dest, const void* src, size_t sz) {
+/*
+  __memcpy_avx_unaligned_erms():
+  mov        %rdi,%rax
+  cmp        $0x20,%rdx
+  jb         52
+  cmp        $0x40,%rdx
+  ja         b2
+  vmovdqu    (%rsi),%ymm0
+  vmovdqu    -0x20(%rsi,%rdx,1),%ymm1
+  vmovdqu    %ymm0,(%rdi)
+  vmovdqu    %ymm1,-0x20(%rdi,%rdx,1)
+  vzeroupper
+  retq
+*/
+
+  __asm__ __volatile__
+    (
+     "  vmovdqu    (%rsi),%ymm0\n"
+     "  vmovdqu    -0x20(%rsi,%rdx,1),%ymm1\n"
+     "  vmovdqu    %ymm0,(%rdi)\n"
+     "  vmovdqu    %ymm1,-0x20(%rdi,%rdx,1)\n"
+     //"  vzeroupper\n"
+     );
+}
+
+// caller must make sure the address alligned to 64 bytes
+void* my_memcpy_emovsb(void* dest, const void* src, size_t sz) {
+/*
+*/
+  __asm__ __volatile__
+    (
+     "  mov        %rdx,%rcx\n"
+     "  rep        movsb %ds:(%rsi),%es:(%rdi)\n"
+     );
+}
+
+
+// caller must make sure the address alligned to 64 bytes
+void* my_memcpy_64_unroll_10(void* dest, const void* src, size_t sz) {
+/*
+  __memcpy_avx_unaligned_erms():
+  mov        %rdi,%rax
+  cmp        $0x20,%rdx
+  jb         52
+  cmp        $0x40,%rdx
+  ja         b2
+  vmovdqu    (%rsi),%ymm0
+  vmovdqu    -0x20(%rsi,%rdx,1),%ymm1
+  vmovdqu    %ymm0,(%rdi)
+  vmovdqu    %ymm1,-0x20(%rdi,%rdx,1)
+  vzeroupper
+  retq
+*/
+
+  __asm__ __volatile__
+    (
+     "  vmovdqu    (%rsi),%ymm0\n"
+     "  vmovdqu    -0x20(%rsi,%rdx,1),%ymm1\n"
+     "  vmovdqu    %ymm0,(%rdi)\n"
+     "  vmovdqu    %ymm1,-0x20(%rdi,%rdx,1)\n"
+     //"  vzeroupper\n"
+     "  vmovdqu    (%rsi),%ymm0\n"
+     "  vmovdqu    -0x20(%rsi,%rdx,1),%ymm1\n"
+     "  vmovdqu    %ymm0,(%rdi)\n"
+     "  vmovdqu    %ymm1,-0x20(%rdi,%rdx,1)\n"
+     //"  vzeroupper\n"
+     "  vmovdqu    (%rsi),%ymm0\n"
+     "  vmovdqu    -0x20(%rsi,%rdx,1),%ymm1\n"
+     "  vmovdqu    %ymm0,(%rdi)\n"
+     "  vmovdqu    %ymm1,-0x20(%rdi,%rdx,1)\n"
+     //"  vzeroupper\n"
+     "  vmovdqu    (%rsi),%ymm0\n"
+     "  vmovdqu    -0x20(%rsi,%rdx,1),%ymm1\n"
+     "  vmovdqu    %ymm0,(%rdi)\n"
+     "  vmovdqu    %ymm1,-0x20(%rdi,%rdx,1)\n"
+     //"  vzeroupper\n"
+     "  vmovdqu    (%rsi),%ymm0\n"
+     "  vmovdqu    -0x20(%rsi,%rdx,1),%ymm1\n"
+     "  vmovdqu    %ymm0,(%rdi)\n"
+     "  vmovdqu    %ymm1,-0x20(%rdi,%rdx,1)\n"
+     //"  vzeroupper\n"
+
+     "  vmovdqu    (%rsi),%ymm0\n"
+     "  vmovdqu    -0x20(%rsi,%rdx,1),%ymm1\n"
+     "  vmovdqu    %ymm0,(%rdi)\n"
+     "  vmovdqu    %ymm1,-0x20(%rdi,%rdx,1)\n"
+     //"  vzeroupper\n"
+     "  vmovdqu    (%rsi),%ymm0\n"
+     "  vmovdqu    -0x20(%rsi,%rdx,1),%ymm1\n"
+     "  vmovdqu    %ymm0,(%rdi)\n"
+     "  vmovdqu    %ymm1,-0x20(%rdi,%rdx,1)\n"
+     //"  vzeroupper\n"
+     "  vmovdqu    (%rsi),%ymm0\n"
+     "  vmovdqu    -0x20(%rsi,%rdx,1),%ymm1\n"
+     "  vmovdqu    %ymm0,(%rdi)\n"
+     "  vmovdqu    %ymm1,-0x20(%rdi,%rdx,1)\n"
+     //"  vzeroupper\n"
+     "  vmovdqu    (%rsi),%ymm0\n"
+     "  vmovdqu    -0x20(%rsi,%rdx,1),%ymm1\n"
+     "  vmovdqu    %ymm0,(%rdi)\n"
+     "  vmovdqu    %ymm1,-0x20(%rdi,%rdx,1)\n"
+     //"  vzeroupper\n"
+     "  vmovdqu    (%rsi),%ymm0\n"
+     "  vmovdqu    -0x20(%rsi,%rdx,1),%ymm1\n"
+     "  vmovdqu    %ymm0,(%rdi)\n"
+     "  vmovdqu    %ymm1,-0x20(%rdi,%rdx,1)\n"
+     //"  vzeroupper\n"
+
+
+     );
+}
+
+
+
+
 int hugepage_forced = 0;
 void* alloc_memory(size_t n_bytes) {
 	void *ptr = NULL;
@@ -133,21 +250,18 @@ void core_test(size_t block_size, size_t off1, size_t off2, size_t gap, unsigned
 	}
 
     // add guard page in the end
-	m1 = alloc_memory(to_alloc + MAX_GAP);
-    memset(m1, 0, to_alloc + MAX_GAP);
-
     if(gap != 0) {
-	    m1 = alloc_memory(to_alloc + 3 * MAX_GAP);
+	m1 = alloc_memory(to_alloc + 3 * MAX_GAP);
         memset(m1, 0, to_alloc + 3 * MAX_GAP);
         p1 = m1 + off1;
-	    p2 = p1 + gap;
+	p2 = p1 + gap;
     } else {
-	    m1 = alloc_memory(to_alloc + MAX_GAP);
+	m1 = alloc_memory(to_alloc + MAX_GAP);
         memset(m1, 0, to_alloc + MAX_GAP);
-	    m2 = alloc_memory(to_alloc + MAX_GAP);
+	m2 = alloc_memory(to_alloc + MAX_GAP);
         memset(m2, 0, to_alloc + MAX_GAP);
         p1 = m1 + off1;
-        p2 = m2 + off1;
+        p2 = m2 + off2;
     }
 
 	printf("%d %p %p 0x%llx\t", block_size, p1, p2, (p1 > p2) ? (p1 - p2) : (p2 - p1));
@@ -180,7 +294,7 @@ void core_test(size_t block_size, size_t off1, size_t off2, size_t gap, unsigned
 
 
 int main(int argc, char *argv[]) {
-	int opt = 0, ret;
+	int opt = 0, testCase = 0;
 
 	unsigned long long *pos = NULL, *ptr = NULL, n_bytes = 0;
 	unsigned long long start_ns;
@@ -189,14 +303,15 @@ int main(int argc, char *argv[]) {
 	unsigned long mem_size_per_thread_in_kb = 4;
 	unsigned int scale = 1;
 	size_t seg_size = 64;
-	size_t seg_gap = 4096;
+	size_t seg_gap = 0;
 	size_t off1 = 0;
 	size_t off2 = 0;
 	double delta = 0.0f;
 	unsigned long long repeat = 1000UL * 10UL;
-    my_memcpy = memcpy;
+	// default case
+	my_memcpy = memcpy;
 
-	while ((opt = getopt(argc, argv, "s:mx:y:lg:r:n")) != -1) {
+	while ((opt = getopt(argc, argv, "s:mx:y:lg:r:c:")) != -1) {
 		switch (opt) {
 		case 's':
 			seg_size = strtoul(optarg, NULL, 0);
@@ -207,8 +322,8 @@ int main(int argc, char *argv[]) {
 		case 'l':
 			hugepage_forced = 1;
 			break;
-		case 'n':
-            my_memcpy = dummyMemcpy;
+		case 'c':
+			testCase = strtoul(optarg, NULL, 0);
 			break;
 		case 'x':
 			off1 = strtoul(optarg, NULL, 0);
@@ -227,6 +342,23 @@ int main(int argc, char *argv[]) {
 		}
 	}
 
+	switch(testCase) {
+		case 0:
+			my_memcpy = memcpy;
+			break;
+		case 1:
+			my_memcpy = dummyMemcpy;
+			break;
+		case 2:
+			my_memcpy = my_memcpy_64;
+			break;
+		case 3:
+			my_memcpy = my_memcpy_64_unroll_10;
+			break;
+		case 4:
+			my_memcpy = my_memcpy_emovsb;
+			break;
+	}
 /*
 	mem_size_per_thread_in_kb *= scale;
 	if (mem_size_per_thread_in_kb < 4) {

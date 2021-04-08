@@ -58,6 +58,31 @@ static inline unsigned long long time_ns(struct timespec* const ts) {
 			+ (unsigned long long) ts->tv_nsec;
 }
 
+void vporymm_vz();
+void vporzmm_vz();
+
+void miscFunc(void) {
+  __asm__ __volatile__
+    (
+     //"  .global vporymm_vz\n"
+     "  vporymm_vz:\n"
+     "  vpor   %ymm0, %ymm0, %ymm0\n"
+     "  vpor   %ymm0, %ymm0, %ymm0\n"
+     "  vpor   %ymm0, %ymm0, %ymm0\n"
+     "  vpor   %ymm0, %ymm0, %ymm0\n"
+     "  vzeroupper\n"
+     "  ret\n"
+     "  vporzmm_vz:\n"
+     "  vpord   %zmm0, %zmm0, %zmm0\n"
+     "  vpord   %zmm0, %zmm0, %zmm0\n"
+     "  vpord   %zmm0, %zmm0, %zmm0\n"
+     "  vpord   %zmm0, %zmm0, %zmm0\n"
+     "  vzeroupper\n"
+     "  ret\n"
+     );
+}
+
+
 void* dummyMemcpy(void* dest, const void* src, size_t sz) {
 /*
   __memcpy_avx_unaligned_erms():
@@ -90,7 +115,7 @@ void* dummyMemcpy(void* dest, const void* src, size_t sz) {
 
 
 // caller must make sure the address alligned to 64 bytes
-void* my_memcpy_64(void* dest, const void* src, size_t sz) {
+void* my_memcpy_64_avx(void* dest, const void* src, size_t sz) {
 /*
   __memcpy_avx_unaligned_erms():
   mov        %rdi,%rax
@@ -116,8 +141,18 @@ void* my_memcpy_64(void* dest, const void* src, size_t sz) {
      );
 }
 
+
 // caller must make sure the address alligned to 64 bytes
-void* my_memcpy_emovsb(void* dest, const void* src, size_t sz) {
+void* my_memcpy_64_avx512(void* dest, const void* src, size_t sz) {
+  __asm__ __volatile__
+    (
+     "  vmovdqu64    (%rsi),%zmm0\n"
+     "  vmovdqu64    %zmm0,(%rdi)\n"
+     );
+}
+
+// caller must make sure the address alligned to 64 bytes
+void* my_memcpy_erm_movsb(void* dest, const void* src, size_t sz) {
 /*
 */
   __asm__ __volatile__
@@ -129,7 +164,169 @@ void* my_memcpy_emovsb(void* dest, const void* src, size_t sz) {
 
 
 // caller must make sure the address alligned to 64 bytes
-void* my_memcpy_64_unroll_10(void* dest, const void* src, size_t sz) {
+void* my_memcpy_x256_avx512_nt_prefetch(void* dest, const void* src, size_t sz) {
+/*
+*/
+  __asm__ __volatile__
+    (
+     "  1:\n"
+     "  prefetcht0 0x200(%rsi)\n"
+     "  prefetcht0 0x240(%rsi)\n"
+     "  prefetcht0 0x280(%rsi)\n"
+     "  prefetcht0 0x2c0(%rsi)\n"
+     "  prefetcht0 0x300(%rsi)\n"
+     "  prefetcht0 0x340(%rsi)\n"
+     "  prefetcht0 0x380(%rsi)\n"
+     "  prefetcht0 0x3c0(%rsi)\n"
+     "  vmovdqu64  (%rsi),%zmm0\n"
+     "  vmovdqu64  0x40(%rsi),%zmm1\n"
+     "  vmovdqu64  0x80(%rsi),%zmm2\n"
+     "  vmovdqu64  0xc0(%rsi),%zmm3\n"
+     "  add        $0x100,%rsi\n"
+     "  sub        $0x100,%rdx\n"
+     "  vmovntdq   %zmm0,(%rdi)\n"
+     "  vmovntdq   %zmm1,0x40(%rdi)\n"
+     "  vmovntdq   %zmm2,0x80(%rdi)\n"
+     "  vmovntdq   %zmm3,0xc0(%rdi)\n"
+     "  add        $0x100,%rdi\n"
+     "  cmp        $0x0,%rdx\n"
+     "  ja         1b\n"
+     "  sfence\n"
+     );
+}
+
+
+// caller must make sure the address alligned to 64 bytes
+void* my_memcpy_x256_avx512(void* dest, const void* src, size_t sz) {
+/*
+*/
+  __asm__ __volatile__
+    (
+     "  1:\n"
+     "  vmovdqu64  (%rsi),%zmm0\n"
+     "  vmovdqu64  0x40(%rsi),%zmm1\n"
+     "  vmovdqu64  0x80(%rsi),%zmm2\n"
+     "  vmovdqu64  0xc0(%rsi),%zmm3\n"
+     "  add        $0x100,%rsi\n"
+     "  sub        $0x100,%rdx\n"
+     "  vmovdqu64  %zmm0,(%rdi)\n"
+     "  vmovdqu64  %zmm1,0x40(%rdi)\n"
+     "  vmovdqu64  %zmm2,0x80(%rdi)\n"
+     "  vmovdqu64  %zmm3,0xc0(%rdi)\n"
+     "  add        $0x100,%rdi\n"
+     "  cmp        $0x0,%rdx\n"
+     "  ja         1b\n"
+     "  sfence\n"
+     );
+}
+
+
+// caller must make sure the address alligned to 64 bytes
+void* my_memcpy_x256_avx512_nt(void* dest, const void* src, size_t sz) {
+/*
+*/
+  __asm__ __volatile__
+    (
+     "  1:\n"
+     "  vmovdqu64  (%rsi),%zmm0\n"
+     "  vmovdqu64  0x40(%rsi),%zmm1\n"
+     "  vmovdqu64  0x80(%rsi),%zmm2\n"
+     "  vmovdqu64  0xc0(%rsi),%zmm3\n"
+     "  add        $0x100,%rsi\n"
+     "  sub        $0x100,%rdx\n"
+     "  vmovntdq   %zmm0,(%rdi)\n"
+     "  vmovntdq   %zmm1,0x40(%rdi)\n"
+     "  vmovntdq   %zmm2,0x80(%rdi)\n"
+     "  vmovntdq   %zmm3,0xc0(%rdi)\n"
+     "  add        $0x100,%rdi\n"
+     "  cmp        $0x0,%rdx\n"
+     "  ja         1b\n"
+     "  sfence\n"
+     );
+}
+
+
+// caller must make sure the address alligned to 64 bytes
+void* my_memcpy_x128_avx_nt_prefetch(void* dest, const void* src, size_t sz) {
+/*
+*/
+  __asm__ __volatile__
+    (
+     "  1:\n"
+     "  prefetcht0 0x100(%rsi)\n"
+     "  prefetcht0 0x140(%rsi)\n"
+     "  prefetcht0 0x180(%rsi)\n"
+     "  prefetcht0 0x1c0(%rsi)\n"
+     "  vmovdqu    (%rsi),%ymm0\n"
+     "  vmovdqu    0x20(%rsi),%ymm1\n"
+     "  vmovdqu    0x40(%rsi),%ymm2\n"
+     "  vmovdqu    0x60(%rsi),%ymm3\n"
+     "  add        $0x80,%rsi\n"
+     "  sub        $0x80,%rdx\n"
+     "  vmovntdq   %ymm0,(%rdi)\n"
+     "  vmovntdq   %ymm1,0x20(%rdi)\n"
+     "  vmovntdq   %ymm2,0x40(%rdi)\n"
+     "  vmovntdq   %ymm3,0x60(%rdi)\n"
+     "  add        $0x80,%rdi\n"
+     "  cmp        $0x0,%rdx\n"
+     "  ja         1b\n"
+     "  sfence\n"
+     );
+}
+
+
+// caller must make sure the address alligned to 64 bytes
+void* my_memcpy_x128_avx_nt(void* dest, const void* src, size_t sz) {
+/*
+*/
+  __asm__ __volatile__
+    (
+     "  1:\n"
+     "  vmovdqu    (%rsi),%ymm0\n"
+     "  vmovdqu    0x20(%rsi),%ymm1\n"
+     "  vmovdqu    0x40(%rsi),%ymm2\n"
+     "  vmovdqu    0x60(%rsi),%ymm3\n"
+     "  add        $0x80,%rsi\n"
+     "  sub        $0x80,%rdx\n"
+     "  vmovntdq   %ymm0,(%rdi)\n"
+     "  vmovntdq   %ymm1,0x20(%rdi)\n"
+     "  vmovntdq   %ymm2,0x40(%rdi)\n"
+     "  vmovntdq   %ymm3,0x60(%rdi)\n"
+     "  add        $0x80,%rdi\n"
+     "  cmp        $0x0,%rdx\n"
+     "  ja         1b\n"
+     "  sfence\n"
+     );
+}
+
+
+// caller must make sure the address alligned to 64 bytes
+void* my_memcpy_x128_avx(void* dest, const void* src, size_t sz) {
+/*
+*/
+  __asm__ __volatile__
+    (
+     "  1:\n"
+     "  vmovdqu    (%rsi),%ymm0\n"
+     "  vmovdqu    0x20(%rsi),%ymm1\n"
+     "  vmovdqu    0x40(%rsi),%ymm2\n"
+     "  vmovdqu    0x60(%rsi),%ymm3\n"
+     "  add        $0x80,%rsi\n"
+     "  sub        $0x80,%rdx\n"
+     "  vmovdqu    %ymm0,(%rdi)\n"
+     "  vmovdqu    %ymm1,0x20(%rdi)\n"
+     "  vmovdqu    %ymm2,0x40(%rdi)\n"
+     "  vmovdqu    %ymm3,0x60(%rdi)\n"
+     "  add        $0x80,%rdi\n"
+     "  cmp        $0x0,%rdx\n"
+     "  ja         1b\n"
+     "  sfence\n"
+     );
+}
+
+
+// caller must make sure the address alligned to 64 bytes
+void* my_memcpy_64_avx_unroll_10(void* dest, const void* src, size_t sz) {
 /*
   __memcpy_avx_unaligned_erms():
   mov        %rdi,%rax
@@ -241,7 +438,7 @@ void core_test(size_t block_size, size_t off1, size_t off2, size_t gap, unsigned
 	struct timespec ts;
 	struct rusage r1, r2;
 	size_t to_alloc = 0;
-	unsigned long long int itr2 = 100;
+	unsigned long long int itr2 = 10;
 
 	if(block_size < DEF_PAGE_SIZE) {
 		to_alloc = DEF_PAGE_SIZE;
@@ -349,14 +546,29 @@ int main(int argc, char *argv[]) {
 		case 1:
 			my_memcpy = dummyMemcpy;
 			break;
-		case 2:
-			my_memcpy = my_memcpy_64;
+		case 6401:
+			my_memcpy = my_memcpy_64_avx;
+			break;
+		case 6402:
+			my_memcpy = my_memcpy_64_avx512;
+			break;
+		case 12801:
+			my_memcpy = my_memcpy_x128_avx_nt_prefetch;
+			break;
+		case 12802:
+			my_memcpy = my_memcpy_x128_avx_nt;
+			break;
+		case 25601:
+			my_memcpy = my_memcpy_x256_avx512_nt_prefetch;
+			break;
+		case 25602:
+			my_memcpy = my_memcpy_x256_avx512_nt;
 			break;
 		case 3:
-			my_memcpy = my_memcpy_64_unroll_10;
+			my_memcpy = my_memcpy_64_avx_unroll_10;
 			break;
 		case 4:
-			my_memcpy = my_memcpy_emovsb;
+			my_memcpy = my_memcpy_erm_movsb;
 			break;
 	}
 /*

@@ -326,6 +326,74 @@ void* my_memcpy_x128_avx(void* dest, const void* src, size_t sz) {
 
 
 // caller must make sure the address alligned to 64 bytes
+void* my_memcpy_x64_avx_nt_prefetch(void* dest, const void* src, size_t sz) {
+/*
+*/
+  __asm__ __volatile__
+    (
+     "  1:\n"
+     "  prefetcht0 0x80(%rsi)\n"
+     "  prefetcht0 0xc0(%rsi)\n"
+     "  vmovdqu    (%rsi),%ymm0\n"
+     "  vmovdqu    0x20(%rsi),%ymm1\n"
+     "  add        $0x40,%rsi\n"
+     "  sub        $0x40,%rdx\n"
+     "  vmovntdq   %ymm0,(%rdi)\n"
+     "  vmovntdq   %ymm1,0x20(%rdi)\n"
+     "  add        $0x40,%rdi\n"
+     "  cmp        $0x0,%rdx\n"
+     "  ja         1b\n"
+     "  sfence\n"
+     );
+}
+
+
+// caller must make sure the address alligned to 64 bytes
+void* my_memcpy_x64_avx_nt(void* dest, const void* src, size_t sz) {
+/*
+*/
+  __asm__ __volatile__
+    (
+     "  1:\n"
+     "  vmovdqu    (%rsi),%ymm0\n"
+     "  vmovdqu    0x20(%rsi),%ymm1\n"
+     "  add        $0x40,%rsi\n"
+     "  sub        $0x40,%rdx\n"
+     "  vmovntdq   %ymm0,(%rdi)\n"
+     "  vmovntdq   %ymm1,0x20(%rdi)\n"
+     "  add        $0x40,%rdi\n"
+     "  cmp        $0x0,%rdx\n"
+     "  ja         1b\n"
+     "  sfence\n"
+     );
+}
+
+
+
+
+// caller must make sure the address alligned to 64 bytes
+void* my_memcpy_x64_avx(void* dest, const void* src, size_t sz) {
+/*
+*/
+  __asm__ __volatile__
+    (
+     "  1:\n"
+     "  vmovdqu    (%rsi),%ymm0\n"
+     "  vmovdqu    0x20(%rsi),%ymm1\n"
+     "  add        $0x40,%rsi\n"
+     "  sub        $0x40,%rdx\n"
+     "  vmovdqu    %ymm0,(%rdi)\n"
+     "  vmovdqu    %ymm1,0x20(%rdi)\n"
+     "  add        $0x40,%rdi\n"
+     "  cmp        $0x0,%rdx\n"
+     "  ja         1b\n"
+     "  sfence\n"
+     );
+}
+
+
+
+// caller must make sure the address alligned to 64 bytes
 void* my_memcpy_64_avx_unroll_10(void* dest, const void* src, size_t sz) {
 /*
   __memcpy_avx_unaligned_erms():
@@ -546,11 +614,20 @@ int main(int argc, char *argv[]) {
 		case 1:
 			my_memcpy = dummyMemcpy;
 			break;
-		case 6401:
+		case 6491:
 			my_memcpy = my_memcpy_64_avx;
 			break;
-		case 6402:
+		case 6492:
 			my_memcpy = my_memcpy_64_avx512;
+			break;
+		case 6401:
+			my_memcpy = my_memcpy_x64_avx_nt_prefetch;
+			break;
+		case 6402:
+			my_memcpy = my_memcpy_x64_avx_nt;
+			break;
+		case 6403:
+			my_memcpy = my_memcpy_x64_avx;
 			break;
 		case 12801:
 			my_memcpy = my_memcpy_x128_avx_nt_prefetch;
@@ -558,11 +635,17 @@ int main(int argc, char *argv[]) {
 		case 12802:
 			my_memcpy = my_memcpy_x128_avx_nt;
 			break;
+		case 12803:
+			my_memcpy = my_memcpy_x128_avx;
+			break;
 		case 25601:
 			my_memcpy = my_memcpy_x256_avx512_nt_prefetch;
 			break;
 		case 25602:
 			my_memcpy = my_memcpy_x256_avx512_nt;
+			break;
+		case 25603:
+			my_memcpy = my_memcpy_x256_avx512;
 			break;
 		case 3:
 			my_memcpy = my_memcpy_64_avx_unroll_10;

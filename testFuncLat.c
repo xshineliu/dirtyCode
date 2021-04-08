@@ -325,6 +325,75 @@ void* my_memcpy_x128_avx(void* dest, const void* src, size_t sz) {
 }
 
 
+
+// caller must make sure the address alligned to 64 bytes
+void* my_memcpy_x128_avx512_nt_prefetch(void* dest, const void* src, size_t sz) {
+/*
+*/
+  __asm__ __volatile__
+    (
+     "  1:\n"
+     "  prefetcht0 0x100(%rsi)\n"
+     "  prefetcht0 0x140(%rsi)\n"
+     "  prefetcht0 0x180(%rsi)\n"
+     "  prefetcht0 0x1c0(%rsi)\n"
+     "  vmovdqu64  (%rsi),%zmm0\n"
+     "  vmovdqu64  0x40(%rsi),%zmm1\n"
+     "  add        $0x80,%rsi\n"
+     "  sub        $0x80,%rdx\n"
+     "  vmovntdq   %zmm0,(%rdi)\n"
+     "  vmovntdq   %zmm1,0x40(%rdi)\n"
+     "  add        $0x80,%rdi\n"
+     "  cmp        $0x0,%rdx\n"
+     "  ja         1b\n"
+     "  sfence\n"
+     );
+}
+
+
+// caller must make sure the address alligned to 64 bytes
+void* my_memcpy_x128_avx512(void* dest, const void* src, size_t sz) {
+/*
+*/
+  __asm__ __volatile__
+    (
+     "  1:\n"
+     "  vmovdqu64  (%rsi),%zmm0\n"
+     "  vmovdqu64  0x40(%rsi),%zmm1\n"
+     "  add        $0x80,%rsi\n"
+     "  sub        $0x80,%rdx\n"
+     "  vmovdqu64  %zmm0,(%rdi)\n"
+     "  vmovdqu64  %zmm1,0x40(%rdi)\n"
+     "  add        $0x80,%rdi\n"
+     "  cmp        $0x0,%rdx\n"
+     "  ja         1b\n"
+     "  sfence\n"
+     );
+}
+
+
+// caller must make sure the address alligned to 64 bytes
+void* my_memcpy_x128_avx512_nt(void* dest, const void* src, size_t sz) {
+/*
+*/
+  __asm__ __volatile__
+    (
+     "  1:\n"
+     "  vmovdqu64  (%rsi),%zmm0\n"
+     "  vmovdqu64  0x40(%rsi),%zmm1\n"
+     "  add        $0x80,%rsi\n"
+     "  sub        $0x80,%rdx\n"
+     "  vmovntdq   %zmm0,(%rdi)\n"
+     "  vmovntdq   %zmm1,0x40(%rdi)\n"
+     "  add        $0x80,%rdi\n"
+     "  cmp        $0x0,%rdx\n"
+     "  ja         1b\n"
+     "  sfence\n"
+     );
+}
+
+
+
 // caller must make sure the address alligned to 64 bytes
 void* my_memcpy_x64_avx_nt_prefetch(void* dest, const void* src, size_t sz) {
 /*
@@ -391,6 +460,68 @@ void* my_memcpy_x64_avx(void* dest, const void* src, size_t sz) {
      );
 }
 
+
+// caller must make sure the address alligned to 64 bytes
+void* my_memcpy_x64_avx512_nt_prefetch(void* dest, const void* src, size_t sz) {
+/*
+*/
+  __asm__ __volatile__
+    (
+     "  1:\n"
+     "  prefetcht0 0x80(%rsi)\n"
+     "  prefetcht0 0xc0(%rsi)\n"
+     "  vmovdqu64    (%rsi),%zmm0\n"
+     "  add        $0x40,%rsi\n"
+     "  sub        $0x40,%rdx\n"
+     "  vmovntdq   %zmm0,(%rdi)\n"
+     "  add        $0x40,%rdi\n"
+     "  cmp        $0x0,%rdx\n"
+     "  ja         1b\n"
+     "  sfence\n"
+     );
+}
+
+
+// caller must make sure the address alligned to 64 bytes
+void* my_memcpy_x64_avx512_nt(void* dest, const void* src, size_t sz) {
+/*
+*/
+  __asm__ __volatile__
+    (
+     "  1:\n"
+     "  prefetcht0 0x80(%rsi)\n"
+     "  prefetcht0 0xc0(%rsi)\n"
+     "  vmovdqu64  (%rsi),%zmm0\n"
+     "  add        $0x40,%rsi\n"
+     "  sub        $0x40,%rdx\n"
+     "  vmovntdq   %zmm0,(%rdi)\n"
+     "  add        $0x40,%rdi\n"
+     "  cmp        $0x0,%rdx\n"
+     "  ja         1b\n"
+     "  sfence\n"
+     );
+}
+
+
+
+
+// caller must make sure the address alligned to 64 bytes
+void* my_memcpy_x64_avx512(void* dest, const void* src, size_t sz) {
+/*
+*/
+  __asm__ __volatile__
+    (
+     "  1:\n"
+     "  vmovdqu64  (%rsi),%zmm0\n"
+     "  add        $0x40,%rsi\n"
+     "  sub        $0x40,%rdx\n"
+     "  vmovdqu64  %zmm0,(%rdi)\n"
+     "  add        $0x40,%rdi\n"
+     "  cmp        $0x0,%rdx\n"
+     "  ja         1b\n"
+     "  sfence\n"
+     );
+}
 
 
 // caller must make sure the address alligned to 64 bytes
@@ -629,6 +760,15 @@ int main(int argc, char *argv[]) {
 		case 6403:
 			my_memcpy = my_memcpy_x64_avx;
 			break;
+		case 6411:
+			my_memcpy = my_memcpy_x64_avx512_nt_prefetch;
+			break;
+		case 6412:
+			my_memcpy = my_memcpy_x64_avx512_nt;
+			break;
+		case 6413:
+			my_memcpy = my_memcpy_x64_avx512;
+			break;
 		case 12801:
 			my_memcpy = my_memcpy_x128_avx_nt_prefetch;
 			break;
@@ -638,13 +778,23 @@ int main(int argc, char *argv[]) {
 		case 12803:
 			my_memcpy = my_memcpy_x128_avx;
 			break;
-		case 25601:
+		case 12811:
+			my_memcpy = my_memcpy_x128_avx512_nt_prefetch;
+			break;
+		case 12812:
+			my_memcpy = my_memcpy_x128_avx512_nt;
+			break;
+		case 12813:
+			my_memcpy = my_memcpy_x128_avx512;
+			break;
+
+		case 25611:
 			my_memcpy = my_memcpy_x256_avx512_nt_prefetch;
 			break;
-		case 25602:
+		case 25612:
 			my_memcpy = my_memcpy_x256_avx512_nt;
 			break;
-		case 25603:
+		case 25613:
 			my_memcpy = my_memcpy_x256_avx512;
 			break;
 		case 3:

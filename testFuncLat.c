@@ -1,6 +1,10 @@
 /*
- * gcc -O2 -o testFunc -fno-plt -static  testFunc.c
+ * gcc -O2 -o testFunc.static -fno-plt -static  testFunc.c
+ * gcc -O2 -o testFunc testFunc.c
  */
+
+// force each function strict align to cache line size
+#pragma GCC optimize ("align-functions=64")
 
 #define _GNU_SOURCE
 #define _FILE_OFFSET_BITS 64
@@ -61,7 +65,55 @@ static inline unsigned long long time_ns(struct timespec* const ts) {
 void vporymm_vz();
 void vporzmm_vz();
 
-void miscFunc(void) {
+// data must point to a valid address
+unsigned long long __attribute__ ((noinline)) my_delay(unsigned long long cnt1, unsigned long long cnt2) {
+  __asm__ __volatile__
+    (
+     "  mov    %rsi, %r11\n"
+     "  1:\n"
+     "  mov    %rdi, %rcx\n"
+
+     "  2:\n"
+     "  dec    %rcx\n"
+     "  cmp    $0x0, %rcx\n"
+     "  ja     2b\n"
+     "  vpord  %zmm0, %zmm0, %zmm0\n"
+     "  dec    %r11\n"
+     "  cmp    $0x0, %r11\n"
+     "  ja     1b\n"
+
+     "  mov    %rcx, %rax\n"
+     );
+}
+
+
+// data must point to a valid address
+void my_delay_wrapper(unsigned long long cnt1, unsigned long long cnt2) {
+	unsigned long long delta1 = 0, delta2 = 0;
+	unsigned long long i = 0;
+	unsigned long long start_ns;
+	struct timespec ts;
+	struct rusage r1, r2;
+
+	memset(&r1, 0, sizeof(r1));
+	memset(&r1, 0, sizeof(r2));
+
+	getrusage(RUSAGE_THREAD, &r1);
+	start_ns = time_ns(&ts);
+	unsigned long long loops = cnt1 * cnt2;
+
+	my_delay(cnt1, cnt2);
+
+	delta1 = time_ns(&ts) - start_ns;
+	getrusage(RUSAGE_THREAD, &r2);
+	delta2 = (time_us_timeval(&(r2.ru_utime)) - time_us_timeval(&(r1.ru_utime))) * 1000UL;
+
+	printf("%llu %llu %.3f %.3f\n", delta1, delta2,
+		       	(double) loops / (double)delta1, (double) loops / (double)delta2);
+}
+
+
+void __attribute__ ((noinline)) miscFunc(void) {
   __asm__ __volatile__
     (
      //"  .global vporymm_vz\n"
@@ -83,7 +135,7 @@ void miscFunc(void) {
 }
 
 
-void* dummyMemcpy(void* dest, const void* src, size_t sz) {
+void* __attribute__ ((noinline)) dummyMemcpy(void* dest, const void* src, size_t sz) {
 /*
   __memcpy_avx_unaligned_erms():
   mov        %rdi,%rax
@@ -115,7 +167,7 @@ void* dummyMemcpy(void* dest, const void* src, size_t sz) {
 
 
 // caller must make sure the address alligned to 64 bytes
-void* my_memcpy_64_avx(void* dest, const void* src, size_t sz) {
+void* __attribute__ ((noinline)) my_memcpy_64_avx(void* dest, const void* src, size_t sz) {
 /*
   __memcpy_avx_unaligned_erms():
   mov        %rdi,%rax
@@ -143,7 +195,7 @@ void* my_memcpy_64_avx(void* dest, const void* src, size_t sz) {
 
 
 // caller must make sure the address alligned to 64 bytes
-void* my_memcpy_64_avx512(void* dest, const void* src, size_t sz) {
+void* __attribute__ ((noinline)) my_memcpy_64_avx512(void* dest, const void* src, size_t sz) {
   __asm__ __volatile__
     (
      "  vmovdqu64    (%rsi),%zmm0\n"
@@ -152,7 +204,7 @@ void* my_memcpy_64_avx512(void* dest, const void* src, size_t sz) {
 }
 
 // caller must make sure the address alligned to 64 bytes
-void* my_memcpy_erm_movsb(void* dest, const void* src, size_t sz) {
+void* __attribute__ ((noinline)) my_memcpy_erm_movsb(void* dest, const void* src, size_t sz) {
 /*
 */
   __asm__ __volatile__
@@ -164,7 +216,7 @@ void* my_memcpy_erm_movsb(void* dest, const void* src, size_t sz) {
 
 
 // caller must make sure the address alligned to 64 bytes
-void* my_memcpy_x256_avx512_nt_prefetch(void* dest, const void* src, size_t sz) {
+void* __attribute__ ((noinline)) my_memcpy_x256_avx512_nt_prefetch(void* dest, const void* src, size_t sz) {
 /*
 */
   __asm__ __volatile__
@@ -222,7 +274,7 @@ void* my_memcpy_x256_avx512(void* dest, const void* src, size_t sz) {
 
 
 // caller must make sure the address alligned to 64 bytes
-void* my_memcpy_x256_avx512_nt(void* dest, const void* src, size_t sz) {
+void* __attribute__ ((noinline)) my_memcpy_x256_avx512_nt(void* dest, const void* src, size_t sz) {
 /*
 */
   __asm__ __volatile__
@@ -247,7 +299,7 @@ void* my_memcpy_x256_avx512_nt(void* dest, const void* src, size_t sz) {
 
 
 // caller must make sure the address alligned to 64 bytes
-void* my_memcpy_x128_avx_nt_prefetch(void* dest, const void* src, size_t sz) {
+void* __attribute__ ((noinline)) my_memcpy_x128_avx_nt_prefetch(void* dest, const void* src, size_t sz) {
 /*
 */
   __asm__ __volatile__
@@ -276,7 +328,7 @@ void* my_memcpy_x128_avx_nt_prefetch(void* dest, const void* src, size_t sz) {
 
 
 // caller must make sure the address alligned to 64 bytes
-void* my_memcpy_x128_avx_nt(void* dest, const void* src, size_t sz) {
+void* __attribute__ ((noinline)) my_memcpy_x128_avx_nt(void* dest, const void* src, size_t sz) {
 /*
 */
   __asm__ __volatile__
@@ -301,7 +353,7 @@ void* my_memcpy_x128_avx_nt(void* dest, const void* src, size_t sz) {
 
 
 // caller must make sure the address alligned to 64 bytes
-void* my_memcpy_x128_avx(void* dest, const void* src, size_t sz) {
+void* __attribute__ ((noinline)) my_memcpy_x128_avx(void* dest, const void* src, size_t sz) {
 /*
 */
   __asm__ __volatile__
@@ -327,7 +379,7 @@ void* my_memcpy_x128_avx(void* dest, const void* src, size_t sz) {
 
 
 // caller must make sure the address alligned to 64 bytes
-void* my_memcpy_x128_avx512_nt_prefetch(void* dest, const void* src, size_t sz) {
+void* __attribute__ ((noinline)) my_memcpy_x128_avx512_nt_prefetch(void* dest, const void* src, size_t sz) {
 /*
 */
   __asm__ __volatile__
@@ -352,7 +404,7 @@ void* my_memcpy_x128_avx512_nt_prefetch(void* dest, const void* src, size_t sz) 
 
 
 // caller must make sure the address alligned to 64 bytes
-void* my_memcpy_x128_avx512(void* dest, const void* src, size_t sz) {
+void* __attribute__ ((noinline)) my_memcpy_x128_avx512(void* dest, const void* src, size_t sz) {
 /*
 */
   __asm__ __volatile__
@@ -395,7 +447,7 @@ void* my_memcpy_x128_avx512_nt(void* dest, const void* src, size_t sz) {
 
 
 // caller must make sure the address alligned to 64 bytes
-void* my_memcpy_x64_avx_nt_prefetch(void* dest, const void* src, size_t sz) {
+void* __attribute__ ((noinline)) my_memcpy_x64_avx_nt_prefetch(void* dest, const void* src, size_t sz) {
 /*
 */
   __asm__ __volatile__
@@ -418,7 +470,7 @@ void* my_memcpy_x64_avx_nt_prefetch(void* dest, const void* src, size_t sz) {
 
 
 // caller must make sure the address alligned to 64 bytes
-void* my_memcpy_x64_avx_nt(void* dest, const void* src, size_t sz) {
+void* __attribute__ ((noinline)) my_memcpy_x64_avx_nt(void* dest, const void* src, size_t sz) {
 /*
 */
   __asm__ __volatile__
@@ -441,7 +493,7 @@ void* my_memcpy_x64_avx_nt(void* dest, const void* src, size_t sz) {
 
 
 // caller must make sure the address alligned to 64 bytes
-void* my_memcpy_x64_avx(void* dest, const void* src, size_t sz) {
+void* __attribute__ ((noinline)) my_memcpy_x64_avx(void* dest, const void* src, size_t sz) {
 /*
 */
   __asm__ __volatile__
@@ -462,7 +514,7 @@ void* my_memcpy_x64_avx(void* dest, const void* src, size_t sz) {
 
 
 // caller must make sure the address alligned to 64 bytes
-void* my_memcpy_x64_avx512_nt_prefetch(void* dest, const void* src, size_t sz) {
+void* __attribute__ ((noinline)) my_memcpy_x64_avx512_nt_prefetch(void* dest, const void* src, size_t sz) {
 /*
 */
   __asm__ __volatile__
@@ -483,7 +535,7 @@ void* my_memcpy_x64_avx512_nt_prefetch(void* dest, const void* src, size_t sz) {
 
 
 // caller must make sure the address alligned to 64 bytes
-void* my_memcpy_x64_avx512_nt(void* dest, const void* src, size_t sz) {
+void* __attribute__ ((noinline)) my_memcpy_x64_avx512_nt(void* dest, const void* src, size_t sz) {
 /*
 */
   __asm__ __volatile__
@@ -506,7 +558,7 @@ void* my_memcpy_x64_avx512_nt(void* dest, const void* src, size_t sz) {
 
 
 // caller must make sure the address alligned to 64 bytes
-void* my_memcpy_x64_avx512(void* dest, const void* src, size_t sz) {
+void* __attribute__ ((noinline)) my_memcpy_x64_avx512(void* dest, const void* src, size_t sz) {
 /*
 */
   __asm__ __volatile__
@@ -525,7 +577,7 @@ void* my_memcpy_x64_avx512(void* dest, const void* src, size_t sz) {
 
 
 // caller must make sure the address alligned to 64 bytes
-void* my_memcpy_64_avx_unroll_10(void* dest, const void* src, size_t sz) {
+void* __attribute__ ((noinline)) my_memcpy_64_avx_unroll_10(void* dest, const void* src, size_t sz) {
 /*
   __memcpy_avx_unaligned_erms():
   mov        %rdi,%rax
@@ -692,7 +744,7 @@ void core_test(size_t block_size, size_t off1, size_t off2, size_t gap, unsigned
 int main(int argc, char *argv[]) {
 	int opt = 0, testCase = 0;
 
-	unsigned long long *pos = NULL, *ptr = NULL, n_bytes = 0;
+	unsigned long long magic = 1234;
 	unsigned long long start_ns;
 	struct timespec ts;
 
@@ -704,10 +756,11 @@ int main(int argc, char *argv[]) {
 	size_t off2 = 0;
 	double delta = 0.0f;
 	unsigned long long repeat = 1000UL * 10UL;
+	unsigned long long repeat2 = 100UL;
 	// default case
 	my_memcpy = memcpy;
 
-	while ((opt = getopt(argc, argv, "s:mx:y:lg:r:c:")) != -1) {
+	while ((opt = getopt(argc, argv, "s:mx:y:lg:r:p:c:")) != -1) {
 		switch (opt) {
 		case 's':
 			seg_size = strtoul(optarg, NULL, 0);
@@ -732,6 +785,9 @@ int main(int argc, char *argv[]) {
 			break;
 		case 'r':
 			repeat = strtoul(optarg, NULL, 0);
+			break;
+		case 'p':
+			repeat2 = strtoul(optarg, NULL, 0);
 			break;
 		default:
 			exit(EXIT_FAILURE);
@@ -787,7 +843,6 @@ int main(int argc, char *argv[]) {
 		case 12813:
 			my_memcpy = my_memcpy_x128_avx512;
 			break;
-
 		case 25611:
 			my_memcpy = my_memcpy_x256_avx512_nt_prefetch;
 			break;
@@ -803,6 +858,11 @@ int main(int argc, char *argv[]) {
 		case 4:
 			my_memcpy = my_memcpy_erm_movsb;
 			break;
+		case 5:
+			//printf("Repeat %llu\n", repeat);
+			my_delay_wrapper(repeat, repeat2);
+			exit(0);
+
 	}
 /*
 	mem_size_per_thread_in_kb *= scale;

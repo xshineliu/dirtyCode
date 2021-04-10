@@ -826,6 +826,9 @@ void my_delay_wrapper(unsigned long long cnt1, unsigned long long cnt2){
 	void *src = p1 + DEF_PAGE_SIZE;
 	unsigned long long loops = cnt1 * cnt2;
 
+	printf("%d %p %p 0x%llx\t", 0, dst, src, (dst > src) ? (dst - src) : (src - dst));
+	fflush(stdout);
+
 	memset(&r1, 0, sizeof(r1));
 	memset(&r1, 0, sizeof(r2));
 

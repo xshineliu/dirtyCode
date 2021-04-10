@@ -62,8 +62,63 @@ static inline unsigned long long time_ns(struct timespec* const ts) {
 			+ (unsigned long long) ts->tv_nsec;
 }
 
+int hugepage_forced = 0;
+void* alloc_memory(size_t n_bytes) {
+	void *ptr = NULL;
+	if(hugepage_forced) {
+		ptr = mmap(NULL, ((n_bytes < DEF_HUGE_PAGE_SIZE) ? DEF_HUGE_PAGE_SIZE : n_bytes),
+                         PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0) ;
+		if(ptr != MAP_FAILED) {
+			//printf("HugePage allocated at pointer %p\n", ptr);
+			return ptr;
+		} else {
+            //printf("HugePage allocated Failed: %p\n", ptr);
+		}
+	}
+	// fall back to normal page allocation
+	int ret = 0;
+	ret = posix_memalign((void **)&ptr, sysconf(_SC_PAGESIZE), n_bytes);
+	if(ret) {
+		//fprintf(stderr,"Normal page allocation failure due to None zero ret code %d\n", ret);
+		exit(EXIT_FAILURE);
+	} else {
+		//printf("Normal page allocated at pointer %p\n", ptr);
+	}
+	return ptr;
+}
+
+
 void vporymm_vz();
 void vporzmm_vz();
+
+// data must point to a valid address
+unsigned long long __attribute__ ((noinline)) my_lat_measure(unsigned long long cnt1, unsigned long long cnt2, void* dst, void* src) {
+  __asm__ __volatile__
+    (
+     "  mov    %rsi, %r11\n"
+     "  1:\n"
+     "  mov    %rdi, %r10\n"
+
+     "  2:\n"
+     "  dec    %r10\n"
+     "  cmp    $0x0, %r10\n"
+     "  ja     2b\n"
+
+     "  vmovdqu    (%rcx),%ymm0\n"
+     "  vmovdqu    0x20(%rcx),%ymm1\n"
+     "  vmovdqu    %ymm0,(%rdx)\n"
+     "  vmovdqu    %ymm1,0x20(%rdx)\n"
+
+     //"  vmovdqu64    (%rcx),%zmm0\n"
+     //"  vmovdqu64    %zmm0,(%rdx)\n"
+
+     "  dec    %r11\n"
+     "  cmp    $0x0, %r11\n"
+     "  ja     1b\n"
+
+     "  mov    %rcx, %rax\n"
+     );
+}
 
 // data must point to a valid address
 unsigned long long __attribute__ ((noinline)) my_delay(unsigned long long cnt1, unsigned long long cnt2) {
@@ -86,6 +141,36 @@ unsigned long long __attribute__ ((noinline)) my_delay(unsigned long long cnt1, 
      );
 }
 
+
+// data must point to a valid address
+void my_lat_measure_wrapper(unsigned long long cnt1, unsigned long long cnt2){
+	unsigned long long delta1 = 0, delta2 = 0;
+	unsigned long long i = 0;
+	unsigned long long start_ns;
+	struct timespec ts;
+	struct rusage r1, r2;
+
+	void *p1 = alloc_memory(MAX_GAP);
+	memset(p1, 0, MAX_GAP);
+	void *dst = p1;
+	void *src = p1 + DEF_PAGE_SIZE;
+
+	memset(&r1, 0, sizeof(r1));
+	memset(&r1, 0, sizeof(r2));
+
+	getrusage(RUSAGE_THREAD, &r1);
+	start_ns = time_ns(&ts);
+	unsigned long long loops = cnt1 * cnt2;
+
+	my_lat_measure(cnt1, cnt2, dst, src);
+
+	delta1 = time_ns(&ts) - start_ns;
+	getrusage(RUSAGE_THREAD, &r2);
+	delta2 = (time_us_timeval(&(r2.ru_utime)) - time_us_timeval(&(r1.ru_utime))) * 1000UL;
+
+	printf("%llu %llu %.3f %.3f\n", delta1, delta2,
+		       	(double) loops / (double)delta1, (double) loops / (double)delta2);
+}
 
 // data must point to a valid address
 void my_delay_wrapper(unsigned long long cnt1, unsigned long long cnt2) {
@@ -653,33 +738,6 @@ void* __attribute__ ((noinline)) my_memcpy_64_avx_unroll_10(void* dest, const vo
 
 
 
-
-int hugepage_forced = 0;
-void* alloc_memory(size_t n_bytes) {
-	void *ptr = NULL;
-	if(hugepage_forced) {
-		ptr = mmap(NULL, ((n_bytes < DEF_HUGE_PAGE_SIZE) ? DEF_HUGE_PAGE_SIZE : n_bytes),
-                         PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS | MAP_HUGETLB, -1, 0) ;
-		if(ptr != MAP_FAILED) {
-			//printf("HugePage allocated at pointer %p\n", ptr);
-			return ptr;
-		} else {
-            //printf("HugePage allocated Failed: %p\n", ptr);
-		}
-	}
-	// fall back to normal page allocation
-	int ret = 0;
-	ret = posix_memalign((void **)&ptr, sysconf(_SC_PAGESIZE), n_bytes);
-	if(ret) {
-		//fprintf(stderr,"Normal page allocation failure due to None zero ret code %d\n", ret);
-		exit(EXIT_FAILURE);
-	} else {
-		//printf("Normal page allocated at pointer %p\n", ptr);
-	}
-	return ptr;
-}
-
-
 void core_test(size_t block_size, size_t off1, size_t off2, size_t gap, unsigned long long int itr1) {
 	unsigned long long delta1 = 0, delta2 = 0;
 	unsigned long long i = 0;
@@ -861,6 +919,10 @@ int main(int argc, char *argv[]) {
 		case 5:
 			//printf("Repeat %llu\n", repeat);
 			my_delay_wrapper(repeat, repeat2);
+			exit(0);
+		case 6:
+			//printf("Repeat %llu\n", repeat);
+			my_lat_measure_wrapper(repeat, repeat2);
 			exit(0);
 
 	}

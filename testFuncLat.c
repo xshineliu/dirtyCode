@@ -27,6 +27,8 @@
 #include <sys/resource.h>
 
 void *(*my_memcpy)(void *dest, const void *src, size_t n);
+unsigned long long  (*my_mix_lat)(unsigned long long cnt1, unsigned long long cnt2, void* dest, void* src);
+
 
 /* Linux Only */
 #define DEF_HUGE_PAGE_SIZE (2 * 1024 * 1024)
@@ -95,8 +97,61 @@ void *my_memcpy_print(void *dest, const void *src, size_t n) {
 void vporymm_vz();
 void vporzmm_vz();
 
+
+
+
 // data must point to a valid address
-unsigned long long __attribute__ ((noinline)) my_lat_measure(unsigned long long cnt1, unsigned long long cnt2, void* dst, void* src) {
+unsigned long long __attribute__ ((noinline)) my_clb_lat(unsigned long long cnt1, unsigned long long cnt2, void* dst, void* src) {
+  __asm__ __volatile__
+    (
+     "  mov    %rsi, %r11\n"
+     "  1:\n"
+     "  mov    %rdi, %r10\n"
+
+     "  2:\n"
+     "  dec    %r10\n"
+     "  cmp    $0x0, %r10\n"
+     "  ja     2b\n"
+
+     "  dec    %r11\n"
+     "  cmp    $0x0, %r11\n"
+     "  ja     1b\n"
+
+     "  mov    %rcx, %rax\n"
+     );
+}
+
+
+// data must point to a valid address
+unsigned long long __attribute__ ((noinline)) my_avx512_block_lat(unsigned long long cnt1, unsigned long long cnt2, void* dst, void* src) {
+  __asm__ __volatile__
+    (
+     "  mov    %rsi, %r11\n"
+     "  1:\n"
+     "  mov    %rdi, %r10\n"
+
+     "  2:\n"
+     "  dec    %r10\n"
+     "  cmp    $0x0, %r10\n"
+     "  ja     2b\n"
+
+     //"  vmovdqu    (%rcx),%ymm0\n"
+     //"  vmovdqu    0x20(%rcx),%ymm1\n"
+     //"  vmovdqu    %ymm0,(%rdx)\n"
+     //"  vmovdqu    %ymm1,0x20(%rdx)\n"
+
+     "  vmovdqu64    (%rcx),%zmm0\n"
+     "  vmovdqu64    %zmm0,(%rdx)\n"
+
+     "  dec    %r11\n"
+     "  cmp    $0x0, %r11\n"
+     "  ja     1b\n"
+
+     "  mov    %rcx, %rax\n"
+     );
+}
+// data must point to a valid address
+unsigned long long __attribute__ ((noinline)) my_block_lat(unsigned long long cnt1, unsigned long long cnt2, void* dst, void* src) {
   __asm__ __volatile__
     (
      "  mov    %rsi, %r11\n"
@@ -124,8 +179,55 @@ unsigned long long __attribute__ ((noinline)) my_lat_measure(unsigned long long 
      );
 }
 
+
 // data must point to a valid address
-unsigned long long __attribute__ ((noinline)) my_lat_measure_with_call(unsigned long long cnt1, unsigned long long cnt2, void* dst, void* src, size_t len, void* call) {
+unsigned long long __attribute__ ((noinline)) my_ins_lat(unsigned long long cnt1, unsigned long long cnt2, void* dst, void* src) {
+  __asm__ __volatile__
+    (
+     "  mov    %rsi, %r11\n"
+     "  1:\n"
+     "  mov    %rdi, %rcx\n"
+
+     "  2:\n"
+     "  dec    %rcx\n"
+     "  cmp    $0x0, %rcx\n"
+     "  ja     2b\n"
+     //"  vpord  %zmm0, %zmm0, %zmm0\n"
+     "  vpord  %ymm0, %ymm0, %ymm0\n"
+     "  dec    %r11\n"
+     "  cmp    $0x0, %r11\n"
+     "  ja     1b\n"
+
+     "  mov    %rcx, %rax\n"
+     );
+}
+
+
+// data must point to a valid address
+unsigned long long __attribute__ ((noinline)) my_avx512_ins_lat(unsigned long long cnt1, unsigned long long cnt2, void* dst, void* src) {
+  __asm__ __volatile__
+    (
+     "  mov    %rsi, %r11\n"
+     "  1:\n"
+     "  mov    %rdi, %rcx\n"
+
+     "  2:\n"
+     "  dec    %rcx\n"
+     "  cmp    $0x0, %rcx\n"
+     "  ja     2b\n"
+     "  vpord  %zmm0, %zmm0, %zmm0\n"
+     //"  vpord  %ymm0, %ymm0, %ymm0\n"
+     "  dec    %r11\n"
+     "  cmp    $0x0, %r11\n"
+     "  ja     1b\n"
+
+     "  mov    %rcx, %rax\n"
+     );
+}
+
+
+// data must point to a valid address
+unsigned long long __attribute__ ((noinline)) my_func_memcpy_lat(unsigned long long cnt1, unsigned long long cnt2, void* dst, void* src, size_t len, void* call) {
   __asm__ __volatile__
     (
      "  push   %r11\n"
@@ -166,28 +268,6 @@ unsigned long long __attribute__ ((noinline)) my_lat_measure_with_call(unsigned 
 
      "  pop    %r10\n"
      "  pop    %r11\n"
-     "  mov    %rcx, %rax\n"
-     );
-}
-
-
-// data must point to a valid address
-unsigned long long __attribute__ ((noinline)) my_simple_delay(unsigned long long cnt1, unsigned long long cnt2) {
-  __asm__ __volatile__
-    (
-     "  mov    %rsi, %r11\n"
-     "  1:\n"
-     "  mov    %rdi, %rcx\n"
-
-     "  2:\n"
-     "  dec    %rcx\n"
-     "  cmp    $0x0, %rcx\n"
-     "  ja     2b\n"
-     "  vpord  %zmm0, %zmm0, %zmm0\n"
-     "  dec    %r11\n"
-     "  cmp    $0x0, %r11\n"
-     "  ja     1b\n"
-
      "  mov    %rcx, %rax\n"
      );
 }
@@ -733,7 +813,7 @@ void* __attribute__ ((noinline)) my_memcpy_64_avx_unroll_10(void* dest, const vo
 
 
 // data must point to a valid address
-void my_lat_measure_wrapper(unsigned long long cnt1, unsigned long long cnt2){
+void my_delay_wrapper(unsigned long long cnt1, unsigned long long cnt2){
 	unsigned long long delta1 = 0, delta2 = 0;
 	unsigned long long i = 0;
 	unsigned long long start_ns;
@@ -744,50 +824,23 @@ void my_lat_measure_wrapper(unsigned long long cnt1, unsigned long long cnt2){
 	memset(p1, 0, MAX_GAP);
 	void *dst = p1;
 	void *src = p1 + DEF_PAGE_SIZE;
+	unsigned long long loops = cnt1 * cnt2;
 
 	memset(&r1, 0, sizeof(r1));
 	memset(&r1, 0, sizeof(r2));
 
 	getrusage(RUSAGE_THREAD, &r1);
 	start_ns = time_ns(&ts);
-	unsigned long long loops = cnt1 * cnt2;
 
-	my_lat_measure(cnt1, cnt2, dst, src);
-
-	delta1 = time_ns(&ts) - start_ns;
-	getrusage(RUSAGE_THREAD, &r2);
-	delta2 = (time_us_timeval(&(r2.ru_utime)) - time_us_timeval(&(r1.ru_utime))) * 1000UL;
-
-	printf("%llu %llu %.3f %.3f\n", delta1, delta2,
-		       	(double) loops / (double)delta1, (double) loops / (double)delta2);
-}
-
-
-// data must point to a valid address
-void my_simple_delay_wrapper(unsigned long long cnt1, unsigned long long cnt2) {
-	unsigned long long delta1 = 0, delta2 = 0;
-	unsigned long long i = 0;
-	unsigned long long start_ns;
-	struct timespec ts;
-	struct rusage r1, r2;
-
-	memset(&r1, 0, sizeof(r1));
-	memset(&r1, 0, sizeof(r2));
-
-	getrusage(RUSAGE_THREAD, &r1);
-	start_ns = time_ns(&ts);
-	unsigned long long loops = cnt1 * cnt2;
-
-	my_simple_delay(cnt1, cnt2);
+	my_mix_lat(cnt1, cnt2, dst, src);
 
 	delta1 = time_ns(&ts) - start_ns;
 	getrusage(RUSAGE_THREAD, &r2);
+
 	delta2 = (time_us_timeval(&(r2.ru_utime)) - time_us_timeval(&(r1.ru_utime))) * 1000UL;
-
 	printf("%llu %llu %.3f %.3f\n", delta1, delta2,
-		       	(double) loops / (double)delta1, (double) loops / (double)delta2);
+		       	(double) loops / (double)delta1 * 1000.0f, (double) loops / (double)delta2 * 1000.0f);
 }
-
 
 
 void pipeline_call_test(size_t block_size, size_t off1, size_t off2, size_t gap, unsigned long long itr1, unsigned long long itr2) {
@@ -843,7 +896,7 @@ void pipeline_call_test(size_t block_size, size_t off1, size_t off2, size_t gap,
 	delta2 = (time_us_timeval(&(r2.ru_utime)) - time_us_timeval(&(r1.ru_utime))) * 1000UL;
 	/* avoid compiler optimization */
 
-	printf("%llu %llu %.2f %.2f\n", delta1, delta2,
+	printf("%llu %llu %.3f %.3f\n", delta1, delta2,
 		       	(double)(delta1) / (double)(loops), (double)(delta2) / (double)(loops));
 }
 
@@ -889,9 +942,9 @@ void single_call_test(size_t block_size, size_t off1, size_t off2, size_t gap, u
 	start_ns = time_ns(&ts);
 	unsigned long long loops = itr1 * itr2;
 
-	//unsigned long long __attribute__ ((noinline)) my_lat_measure_with_call(unsigned long long cnt1, unsigned long long cnt2, void* dst, void* src, size_t len, void* call) {
+	//unsigned long long __attribute__ ((noinline)) _with_call(unsigned long long cnt1, unsigned long long cnt2, void* dst, void* src, size_t len, void* call) {
 	//my_memcpy = my_memcpy_print;
-	my_lat_measure_with_call(itr1, itr2, p1, p2, block_size, (void *)my_memcpy);
+	my_func_memcpy_lat(itr1, itr2, p1, p2, block_size, (void *)my_memcpy);
 
 	delta1 = time_ns(&ts) - start_ns;
 	getrusage(RUSAGE_THREAD, &r2);
@@ -923,6 +976,7 @@ int main(int argc, char *argv[]) {
 	unsigned long long repeat2 = 10UL;
 	// default case
 	my_memcpy = memcpy;
+	my_mix_lat = my_clb_lat;
 
 	while ((opt = getopt(argc, argv, "b:mx:y:lsg:r:p:c:")) != -1) {
 		switch (opt) {
@@ -963,11 +1017,15 @@ int main(int argc, char *argv[]) {
 
 	switch(testCase) {
 		case 0:
-			my_memcpy = memcpy;
-			break;
-		case 1:
 			my_memcpy = dummyMemcpy;
 			break;
+		case 1:
+			my_memcpy = memcpy;
+			break;
+		case 2:
+			my_memcpy = my_memcpy_erm_movsb;
+			break;
+
 		case 6491:
 			my_memcpy = my_memcpy_64_avx;
 			break;
@@ -1019,21 +1077,34 @@ int main(int argc, char *argv[]) {
 		case 25613:
 			my_memcpy = my_memcpy_x256_avx512;
 			break;
-		case 3:
+		case 9993:
 			my_memcpy = my_memcpy_64_avx_unroll_10;
 			break;
-		case 4:
-			my_memcpy = my_memcpy_erm_movsb;
-			break;
-		case 5:
+		case 9900:
 			//printf("Repeat %llu\n", repeat);
-			my_simple_delay_wrapper(repeat, repeat2);
+			my_mix_lat = my_clb_lat;
+			my_delay_wrapper(repeat, repeat2);
 			exit(0);
-		case 6:
+		case 9901:
 			//printf("Repeat %llu\n", repeat);
-			my_lat_measure_wrapper(repeat, repeat2);
+			my_mix_lat = my_ins_lat;
+			my_delay_wrapper(repeat, repeat2);
 			exit(0);
-
+		case 9902:
+			//printf("Repeat %llu\n", repeat);
+			my_mix_lat = my_block_lat;
+			my_delay_wrapper(repeat, repeat2);
+			exit(0);
+		case 9911:
+			//printf("Repeat %llu\n", repeat);
+			my_mix_lat = my_avx512_ins_lat;
+			my_delay_wrapper(repeat, repeat2);
+			exit(0);
+		case 9912:
+			//printf("Repeat %llu\n", repeat);
+			my_mix_lat = my_avx512_block_lat;
+			my_delay_wrapper(repeat, repeat2);
+			exit(0);
 	}
 /*
 	mem_size_per_thread_in_kb *= scale;

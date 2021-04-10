@@ -47,6 +47,8 @@ float ms_rndset = 0.0f;
 float rnd_mul = 0.0f;
 float avg_ld_cost = 0.0f;
 float use_ratio = 1.0f;
+int hugepage_forced = 0;
+int single_call = 0;
 // global end ///////////
 
 static inline unsigned long long time_us_timeval(struct timeval* const tv) {
@@ -62,7 +64,6 @@ static inline unsigned long long time_ns(struct timespec* const ts) {
 			+ (unsigned long long) ts->tv_nsec;
 }
 
-int hugepage_forced = 0;
 void* alloc_memory(size_t n_bytes) {
 	void *ptr = NULL;
 	if(hugepage_forced) {
@@ -87,6 +88,9 @@ void* alloc_memory(size_t n_bytes) {
 	return ptr;
 }
 
+void *my_memcpy_print(void *dest, const void *src, size_t n) {
+	fprintf(stderr, "%llx %llx %llx\n", dest, src, n);
+}
 
 void vporymm_vz();
 void vporzmm_vz();
@@ -121,7 +125,54 @@ unsigned long long __attribute__ ((noinline)) my_lat_measure(unsigned long long 
 }
 
 // data must point to a valid address
-unsigned long long __attribute__ ((noinline)) my_delay(unsigned long long cnt1, unsigned long long cnt2) {
+unsigned long long __attribute__ ((noinline)) my_lat_measure_with_call(unsigned long long cnt1, unsigned long long cnt2, void* dst, void* src, size_t len, void* call) {
+  __asm__ __volatile__
+    (
+     "  push   %r11\n"
+     "  push   %r10\n"
+     "  mov    %rsi, %r11\n"
+     "  1:\n"
+     "  mov    %rdi, %r10\n"
+
+     "  2:\n"
+     "  dec    %r10\n"
+     "  cmp    $0x0, %r10\n"
+     "  ja     2b\n"
+
+     "  push   %rsi\n"
+     "  push   %r11\n"
+     "  push   %rdi\n"
+     "  push   %r10\n"
+     "  push   %rcx\n"
+     "  push   %rdx\n"
+     "  push   %r8\n"
+     "  push   %r9\n"
+     "  mov    %rdx, %rdi\n"
+     "  mov    %rcx, %rsi\n"
+     "  mov    %r8, %rdx\n"
+     "  call   *%r9\n"
+     "  pop    %r9\n"
+     "  pop    %r8\n"
+     "  pop    %rdx\n"
+     "  pop    %rcx\n"
+     "  pop    %r10\n"
+     "  pop    %rdi\n"
+     "  pop    %r11\n"
+     "  pop    %rsi\n"
+
+     "  dec    %r11\n"
+     "  cmp    $0x0, %r11\n"
+     "  ja     1b\n"
+
+     "  pop    %r10\n"
+     "  pop    %r11\n"
+     "  mov    %rcx, %rax\n"
+     );
+}
+
+
+// data must point to a valid address
+unsigned long long __attribute__ ((noinline)) my_simple_delay(unsigned long long cnt1, unsigned long long cnt2) {
   __asm__ __volatile__
     (
      "  mov    %rsi, %r11\n"
@@ -139,62 +190,6 @@ unsigned long long __attribute__ ((noinline)) my_delay(unsigned long long cnt1, 
 
      "  mov    %rcx, %rax\n"
      );
-}
-
-
-// data must point to a valid address
-void my_lat_measure_wrapper(unsigned long long cnt1, unsigned long long cnt2){
-	unsigned long long delta1 = 0, delta2 = 0;
-	unsigned long long i = 0;
-	unsigned long long start_ns;
-	struct timespec ts;
-	struct rusage r1, r2;
-
-	void *p1 = alloc_memory(MAX_GAP);
-	memset(p1, 0, MAX_GAP);
-	void *dst = p1;
-	void *src = p1 + DEF_PAGE_SIZE;
-
-	memset(&r1, 0, sizeof(r1));
-	memset(&r1, 0, sizeof(r2));
-
-	getrusage(RUSAGE_THREAD, &r1);
-	start_ns = time_ns(&ts);
-	unsigned long long loops = cnt1 * cnt2;
-
-	my_lat_measure(cnt1, cnt2, dst, src);
-
-	delta1 = time_ns(&ts) - start_ns;
-	getrusage(RUSAGE_THREAD, &r2);
-	delta2 = (time_us_timeval(&(r2.ru_utime)) - time_us_timeval(&(r1.ru_utime))) * 1000UL;
-
-	printf("%llu %llu %.3f %.3f\n", delta1, delta2,
-		       	(double) loops / (double)delta1, (double) loops / (double)delta2);
-}
-
-// data must point to a valid address
-void my_delay_wrapper(unsigned long long cnt1, unsigned long long cnt2) {
-	unsigned long long delta1 = 0, delta2 = 0;
-	unsigned long long i = 0;
-	unsigned long long start_ns;
-	struct timespec ts;
-	struct rusage r1, r2;
-
-	memset(&r1, 0, sizeof(r1));
-	memset(&r1, 0, sizeof(r2));
-
-	getrusage(RUSAGE_THREAD, &r1);
-	start_ns = time_ns(&ts);
-	unsigned long long loops = cnt1 * cnt2;
-
-	my_delay(cnt1, cnt2);
-
-	delta1 = time_ns(&ts) - start_ns;
-	getrusage(RUSAGE_THREAD, &r2);
-	delta2 = (time_us_timeval(&(r2.ru_utime)) - time_us_timeval(&(r1.ru_utime))) * 1000UL;
-
-	printf("%llu %llu %.3f %.3f\n", delta1, delta2,
-		       	(double) loops / (double)delta1, (double) loops / (double)delta2);
 }
 
 
@@ -737,8 +732,65 @@ void* __attribute__ ((noinline)) my_memcpy_64_avx_unroll_10(void* dest, const vo
 }
 
 
+// data must point to a valid address
+void my_lat_measure_wrapper(unsigned long long cnt1, unsigned long long cnt2){
+	unsigned long long delta1 = 0, delta2 = 0;
+	unsigned long long i = 0;
+	unsigned long long start_ns;
+	struct timespec ts;
+	struct rusage r1, r2;
 
-void core_test(size_t block_size, size_t off1, size_t off2, size_t gap, unsigned long long int itr1) {
+	void *p1 = alloc_memory(MAX_GAP);
+	memset(p1, 0, MAX_GAP);
+	void *dst = p1;
+	void *src = p1 + DEF_PAGE_SIZE;
+
+	memset(&r1, 0, sizeof(r1));
+	memset(&r1, 0, sizeof(r2));
+
+	getrusage(RUSAGE_THREAD, &r1);
+	start_ns = time_ns(&ts);
+	unsigned long long loops = cnt1 * cnt2;
+
+	my_lat_measure(cnt1, cnt2, dst, src);
+
+	delta1 = time_ns(&ts) - start_ns;
+	getrusage(RUSAGE_THREAD, &r2);
+	delta2 = (time_us_timeval(&(r2.ru_utime)) - time_us_timeval(&(r1.ru_utime))) * 1000UL;
+
+	printf("%llu %llu %.3f %.3f\n", delta1, delta2,
+		       	(double) loops / (double)delta1, (double) loops / (double)delta2);
+}
+
+
+// data must point to a valid address
+void my_simple_delay_wrapper(unsigned long long cnt1, unsigned long long cnt2) {
+	unsigned long long delta1 = 0, delta2 = 0;
+	unsigned long long i = 0;
+	unsigned long long start_ns;
+	struct timespec ts;
+	struct rusage r1, r2;
+
+	memset(&r1, 0, sizeof(r1));
+	memset(&r1, 0, sizeof(r2));
+
+	getrusage(RUSAGE_THREAD, &r1);
+	start_ns = time_ns(&ts);
+	unsigned long long loops = cnt1 * cnt2;
+
+	my_simple_delay(cnt1, cnt2);
+
+	delta1 = time_ns(&ts) - start_ns;
+	getrusage(RUSAGE_THREAD, &r2);
+	delta2 = (time_us_timeval(&(r2.ru_utime)) - time_us_timeval(&(r1.ru_utime))) * 1000UL;
+
+	printf("%llu %llu %.3f %.3f\n", delta1, delta2,
+		       	(double) loops / (double)delta1, (double) loops / (double)delta2);
+}
+
+
+
+void pipeline_call_test(size_t block_size, size_t off1, size_t off2, size_t gap, unsigned long long itr1, unsigned long long itr2) {
 	unsigned long long delta1 = 0, delta2 = 0;
 	unsigned long long i = 0;
 	register char *m1 = NULL, *m2 = NULL;
@@ -747,7 +799,6 @@ void core_test(size_t block_size, size_t off1, size_t off2, size_t gap, unsigned
 	struct timespec ts;
 	struct rusage r1, r2;
 	size_t to_alloc = 0;
-	unsigned long long int itr2 = 10;
 
 	if(block_size < DEF_PAGE_SIZE) {
 		to_alloc = DEF_PAGE_SIZE;
@@ -793,9 +844,64 @@ void core_test(size_t block_size, size_t off1, size_t off2, size_t gap, unsigned
 	/* avoid compiler optimization */
 
 	printf("%llu %llu %.2f %.2f\n", delta1, delta2,
-		       	(double)(delta1) / (double)(loops),
-			(double)(delta2) / (double)(loops));
+		       	(double)(delta1) / (double)(loops), (double)(delta2) / (double)(loops));
 }
+
+
+void single_call_test(size_t block_size, size_t off1, size_t off2, size_t gap, unsigned long long  itr1, unsigned long long itr2) {
+	unsigned long long delta1 = 0, delta2 = 0;
+	unsigned long long i = 0;
+	register char *m1 = NULL, *m2 = NULL;
+	register char *p1 = NULL, *p2 = NULL;
+	unsigned long long start_ns;
+	struct timespec ts;
+	struct rusage r1, r2;
+	size_t to_alloc = 0;
+
+	if(block_size < DEF_PAGE_SIZE) {
+		to_alloc = DEF_PAGE_SIZE;
+	} else {
+		to_alloc = block_size;
+	}
+
+    // add guard page in the end
+    if(gap != 0) {
+	m1 = alloc_memory(to_alloc + 3 * MAX_GAP);
+        memset(m1, 0, to_alloc + 3 * MAX_GAP);
+        p1 = m1 + off1;
+	p2 = p1 + gap;
+    } else {
+	m1 = alloc_memory(to_alloc + MAX_GAP);
+        memset(m1, 0, to_alloc + MAX_GAP);
+	m2 = alloc_memory(to_alloc + MAX_GAP);
+        memset(m2, 0, to_alloc + MAX_GAP);
+        p1 = m1 + off1;
+        p2 = m2 + off2;
+    }
+
+	printf("%d %p %p 0x%llx\t", block_size, p1, p2, (p1 > p2) ? (p1 - p2) : (p2 - p1));
+	fflush(stdout);
+
+	memset(&r1, 0, sizeof(r1));
+	memset(&r1, 0, sizeof(r2));
+
+	getrusage(RUSAGE_THREAD, &r1);
+	start_ns = time_ns(&ts);
+	unsigned long long loops = itr1 * itr2;
+
+	//unsigned long long __attribute__ ((noinline)) my_lat_measure_with_call(unsigned long long cnt1, unsigned long long cnt2, void* dst, void* src, size_t len, void* call) {
+	//my_memcpy = my_memcpy_print;
+	my_lat_measure_with_call(itr1, itr2, p1, p2, block_size, (void *)my_memcpy);
+
+	delta1 = time_ns(&ts) - start_ns;
+	getrusage(RUSAGE_THREAD, &r2);
+	delta2 = (time_us_timeval(&(r2.ru_utime)) - time_us_timeval(&(r1.ru_utime))) * 1000UL;
+	/* avoid compiler optimization */
+
+	printf("%llu %llu %.3f %.3f\n", delta1, delta2,
+		       	(double)(delta1) / (double)(loops), (double)(delta2) / (double)(loops));
+}
+
 
 
 
@@ -814,13 +920,13 @@ int main(int argc, char *argv[]) {
 	size_t off2 = 0;
 	double delta = 0.0f;
 	unsigned long long repeat = 1000UL * 10UL;
-	unsigned long long repeat2 = 100UL;
+	unsigned long long repeat2 = 10UL;
 	// default case
 	my_memcpy = memcpy;
 
-	while ((opt = getopt(argc, argv, "s:mx:y:lg:r:p:c:")) != -1) {
+	while ((opt = getopt(argc, argv, "b:mx:y:lsg:r:p:c:")) != -1) {
 		switch (opt) {
-		case 's':
+		case 'b':
 			seg_size = strtoul(optarg, NULL, 0);
 			break;
 		case 'm':
@@ -828,6 +934,9 @@ int main(int argc, char *argv[]) {
 			break;
 		case 'l':
 			hugepage_forced = 1;
+			break;
+		case 's':
+			single_call = 1;
 			break;
 		case 'c':
 			testCase = strtoul(optarg, NULL, 0);
@@ -918,7 +1027,7 @@ int main(int argc, char *argv[]) {
 			break;
 		case 5:
 			//printf("Repeat %llu\n", repeat);
-			my_delay_wrapper(repeat, repeat2);
+			my_simple_delay_wrapper(repeat, repeat2);
 			exit(0);
 		case 6:
 			//printf("Repeat %llu\n", repeat);
@@ -937,7 +1046,10 @@ int main(int argc, char *argv[]) {
     if (off1 + off2 + seg_gap > 3 * MAX_GAP) {
 		fprintf(stderr, "total gap must be <= 0x%llx\n", 3 * MAX_GAP);
     }
-
-	core_test(seg_size, off1, off2, seg_gap, repeat);
+	if(!single_call) {
+		pipeline_call_test(seg_size, off1, off2, seg_gap, repeat, repeat2);
+	} else {
+		single_call_test(seg_size, off1, off2, seg_gap, repeat, repeat2);
+	}
 	return EXIT_SUCCESS;
 }

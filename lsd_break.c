@@ -31,7 +31,8 @@ int num_threads = 2;
 int cpubind = 0;
 volatile int timeout = 0; /* this data is shared by the thread(s) */
 int delay_sec = 10;
-int test_case = 0;
+unsigned long long count1 = 3100000;
+unsigned long long count2 = 1000;
 
 static inline long long unsigned time_ns(struct timespec* const ts) {
         if (clock_gettime(CLOCK_REALTIME, ts)) {
@@ -117,17 +118,24 @@ unsigned long long __attribute__ ((aligned (64), noinline )) delay_with_cnt(unsi
      "  nop\n"
      "  nop\n"
      "  nop\n"
-     //"  nop\n"
-     //"  nop\n"
-     //"  nop\n"  // 050
-     //"  nop\n"  // 051
+     "  nop\n"
+     "  nop\n"
+     "  nop\n"  // 050
+     "  nop\n"  // 051
+     "  nop\n"  // 052
+     "  nop\n"  // 053
+     //"  nop\n"  // 054
+     //"  nop\n"  // 055
 
+// 10 bytes push 2, push 2, mov 3, mov 3
 
      "  push   %r11\n"
      "  push   %r10\n"
      "  mov    %rsi, %r11\n"
      "  1:\n"
      "  mov    %rdi, %r10\n"
+
+// dec 3, cmp 4, ja 2
 
      "  2:\n"
      "  dec    %r10\n"
@@ -181,7 +189,8 @@ void *counting(void * param)
         taskbind(id);
         start_ns = time_ns(&ts);
 
-        delay_with_cnt(3100000, 1000, NULL, NULL, 0, NULL);
+        //delay_with_cnt(3100000, 1000, NULL, NULL, 0, NULL);
+        delay_with_cnt(count1, count2, NULL, NULL, 0, NULL);
 
         delta1 = time_ns(&ts) - start_ns;
         tid = syscall(SYS_gettid);
@@ -199,7 +208,7 @@ int main(int argc, char *argv[])
         pthread_attr_t attr; /* set of thread attributes */
         char *p = NULL;
 
-        while ((opt = getopt(argc, argv, "n:d:c:b")) != -1) {
+        while ((opt = getopt(argc, argv, "n:d:x:y:b")) != -1) {
                 switch (opt) {
                 case 'n':
                         num_threads = strtoul(optarg, NULL, 0);
@@ -207,8 +216,11 @@ int main(int argc, char *argv[])
                 case 'd':
                         delay_sec = strtoul(optarg, NULL, 0);
                         break;
-                case 'c':
-                        test_case = strtoul(optarg, NULL, 0);
+                case 'x':
+                        count1 = strtoull(optarg, NULL, 0);
+                        break;
+                case 'y':
+                        count2 = strtoull(optarg, NULL, 0);
                         break;
                 case 'b':
                         cpubind = 1;
@@ -247,7 +259,7 @@ int main(int argc, char *argv[])
                 p += L1D_CL_SIZE;
         }
 
-        printf("Created %d threads with test case %d.\n", num_threads, test_case);
+        printf("Created %d threads with test case %d.\n", num_threads, count1);
 
 
         //sleep(delay_sec);
